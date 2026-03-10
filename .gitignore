@@ -1,0 +1,18 @@
+# Environment Variables
+.env
+
+# Auto-generated Temporary Files
+.tmp/
+
+# Google OAuth
+credentials.json
+token.json
+
+# Frontend secrets
+frontend/config.js
+
+# Agent folders
+.agents/
+.agent/
+_agents/
+_agent/

@@ -1,0 +1,337 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --gl-bg: rgba(255, 255, 255, 0.05);
+  --gl-border: rgba(255, 255, 255, 0.1);
+  --gl-blur: blur(12px);
+  --text-primary: rgba(255, 255, 255, 0.9);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --accent: #60a5fa;
+  --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+  --red-color: #ef4444;
+  --yellow-color: #f59e0b;
+  --green-color: #10b981;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-gradient);
+  background-attachment: fixed;
+  color: var(--text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+/* Header */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--gl-border);
+}
+
+.header-info h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.header-info p {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.sync-btn {
+  background: var(--gl-bg);
+  border: 1px solid var(--gl-border);
+  color: var(--text-primary);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: var(--gl-blur);
+}
+
+.sync-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.sync-btn.spinning svg {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Main Content */
+.main-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.loading-state,
+.empty-state {
+  text-align: center;
+  padding: 4rem;
+  background: var(--gl-bg);
+  border-radius: 20px;
+  border: 1px solid var(--gl-border);
+  backdrop-filter: var(--gl-blur);
+  color: var(--text-secondary);
+}
+
+/* Accordions */
+.category-accordion {
+  background: var(--gl-bg);
+  border: 1px solid var(--gl-border);
+  border-radius: 20px;
+  overflow: hidden;
+  backdrop-filter: var(--gl-blur);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s ease;
+}
+
+.accordion-header {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.accordion-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.accordion-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.accordion-title h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.urgency-indicators {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.urgency-box {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.urgency-box.red {
+  background: rgba(239, 68, 68, 0.8);
+}
+
+.urgency-box.yellow {
+  background: rgba(245, 158, 11, 0.8);
+}
+
+.urgency-box.green {
+  background: rgba(16, 185, 129, 0.8);
+}
+
+.accordion-body {
+  padding: 1rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  border-top: 1px solid var(--gl-border);
+}
+
+/* Task Cards */
+.task-card {
+  padding: 1.25rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--gl-border);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle left border to indicate urgency */
+.task-card.urgency-red {
+  border-left: 4px solid var(--red-color);
+}
+
+.task-card.urgency-yellow {
+  border-left: 4px solid var(--yellow-color);
+}
+
+.task-card.urgency-green {
+  border-left: 4px solid var(--green-color);
+}
+
+.task-card:hover {
+  background: rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+}
+
+.task-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  cursor: pointer;
+}
+
+.task-content {
+  flex: 1;
+}
+
+.task-header-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.task-title {
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.course-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* Special styling for Check Out Mail */
+.category-accordion.checkout-mail {
+  border-color: rgba(96, 165, 250, 0.3);
+  background: rgba(96, 165, 250, 0.02);
+}
+
+.category-accordion.checkout-mail .urgency-indicators {
+  display: none;
+  /* Hide red/yellow/green for this category */
+}
+
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.action-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.star-btn {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.star-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.star-btn.active {
+  color: var(--yellow-color);
+}
+
+.complete-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--text-secondary);
+  margin-left: 0.5rem;
+}
+
+.complete-btn:hover {
+  border-color: var(--green-color);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+/* Expanded Details */
+.task-details {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--gl-border);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.task-details p.location {
+  margin-top: 0.5rem;
+  color: var(--text-primary);
+}
+
+.email-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+  transition: opacity 0.2s;
+}
+
+.email-link:hover {
+  opacity: 0.8;
+}
