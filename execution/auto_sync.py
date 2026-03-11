@@ -9,6 +9,7 @@ extracts tasks using Sarvam AI, and upserts them into Supabase.
 import os
 import json
 import base64
+import time
 from datetime import datetime, timezone, timedelta
 import httpx
 from dotenv import load_dotenv
@@ -91,8 +92,8 @@ def decode_body(payload):
     return body.strip()
 
 def fetch_recent_emails(service):
-    # Fetch emails from the last 12 hours to catch up
-    yesterday = (datetime.now() - timedelta(hours=12)).strftime('%Y/%m/%d')
+    # Fetch emails from the last 24 hours to prevent dropped emails if a schedule skips
+    yesterday = (datetime.now() - timedelta(hours=24)).strftime('%Y/%m/%d')
     query = f"is:unread after:{yesterday}"
     print(f"[INFO] Querying Gmail: {query}")
     
@@ -109,8 +110,8 @@ def fetch_recent_emails(service):
             date    = headers.get("Date", "")
             body    = decode_body(full_msg["payload"])
             
-            # Truncate body to save LLM tokens
-            body = body[:800].replace("\n", " ").strip() if body else ""
+            # Truncate body to save LLM tokens (bumped to 1500 for better context)
+            body = body[:1500].replace("\n", " ").strip() if body else ""
             
             parsed_emails.append({
                 "id": msg["id"],
@@ -131,8 +132,8 @@ def extract_tasks_with_llm(emails, settings_row):
         
     print(f"[INFO] Passing {len(emails)} emails to Sarvam-105b...")
     
-    # Let's fetch current pending tasks to avoid duplication
-    res = supabase.table("tasks").select("title, course, deadline").eq("status", "pending").execute()
+    # Let's fetch current pending tasks to avoid duplication (limit 100 to save tokens)
+    res = supabase.table("tasks").select("title, course, deadline").eq("status", "pending").limit(100).execute()
     pending_tasks = json.dumps(res.data) if res.data else "None"
     
     user_profile = settings_row.get("user_profile", "A typical student.")
@@ -197,11 +198,17 @@ Rules:
                 
                 for t in extracted:
                     t["source_email_id"] = email["id"]
+                    # Sanitize the deadline in case the LLM returns the literal string "null" instead of actual JSON null type
+                    if isinstance(t.get("deadline"), str) and t["deadline"].strip().lower() == "null":
+                        t["deadline"] = None
                     tasks_to_insert.append(t)
             else:
                 print(f"[ERROR] Sarvam returned {resp.status_code}: {resp.text}")
         except Exception as e:
             print(f"[ERROR] LLM Request failed for email {email['id']}: {e}")
+            
+        # Prevent Sarvam AI rate limits when processing multiple emails
+        time.sleep(1.5)
             
     return tasks_to_insert
 
