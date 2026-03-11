@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { differenceInDays, isPast, isToday, isTomorrow, format, startOfDay } from 'date-fns';
-import { ChevronDown, ChevronRight, Star, ExternalLink, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Star, ExternalLink, RefreshCw, LogOut } from 'lucide-react';
+import Auth from './Auth';
 import './index.css';
 
 // Initialize Supabase
@@ -45,13 +46,32 @@ function formatDeadline(iso) {
 }
 
 export default function App() {
+  const [session, setSession] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState({});
 
   useEffect(() => {
-    fetchTasks();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) fetchTasks();
+    });
+
+    supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      setSession(newSession);
+      if (newSession) {
+        // If login successful, trigger our onboard function to save tokens/profile
+        if (_event === 'SIGNED_IN') {
+             // We can extract provider_token/refresh from newSession here or rely on the backend via cookie.
+             // Vercel serverless handles token via `supabase.auth.getSession()` securely if cookies are set
+             handleOnboarding(newSession);
+        }
+        fetchTasks();
+      } else {
+        setTasks([]);
+      }
+    });
 
     // Realtime subscription
     let channel = null;
@@ -72,7 +92,7 @@ export default function App() {
   }, []);
 
   const fetchTasks = async () => {
-    if (!supabase) {
+    if (!supabase || !session) {
       setLoading(false);
       return;
     }
@@ -84,6 +104,31 @@ export default function App() {
 
     if (!error && data) {
       setTasks(data);
+    }
+    setLoading(false);
+  };
+
+  const handleOnboarding = async (sess) => {
+    setLoading(true);
+    try {
+        const providerToken = sess?.provider_token;
+        const providerRefreshToken = sess?.provider_refresh_token;
+        
+        // Pass tokens to our onboard function in standard VITE API route
+        const res = await fetch('/api/onboard', {
+           method: 'POST',
+           headers: {
+               'Content-Type': 'application/json',
+               'Authorization': `Bearer ${sess.access_token}`
+           },
+           body: JSON.stringify({ providerToken, providerRefreshToken })
+        });
+        
+        if (!res.ok) {
+           console.error("Onboarding failed", await res.text());
+        }
+    } catch (e) {
+        console.error("Onboarding error", e);
     }
     setLoading(false);
   };
@@ -177,6 +222,10 @@ export default function App() {
     return a.localeCompare(b);
   });
 
+  if (!session) {
+    return <Auth supabase={supabase} />
+  }
+
   return (
     <div className="app-container">
       <header className="app-header">
@@ -184,13 +233,24 @@ export default function App() {
           <h1>My Tasks</h1>
           <p>{format(new Date(), 'EEEE, MMMM do')}</p>
         </div>
-        <button
-          onClick={handleManualSync}
-          className={`sync-btn ${syncing ? 'spinning' : ''}`}
-          disabled={syncing || !supabase}
-        >
-          <RefreshCw size={20} />
-        </button>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <button
+            onClick={handleManualSync}
+            className={`sync-btn ${syncing ? 'spinning' : ''}`}
+            disabled={syncing || !supabase}
+            title="Refresh Inbox"
+          >
+            <RefreshCw size={20} />
+          </button>
+          
+          <button
+            onClick={() => supabase.auth.signOut()}
+            className={`sync-btn`}
+            title="Sign Out"
+          >
+            <LogOut size={20} />
+          </button>
+        </div>
       </header>
 
       <main className="main-content">

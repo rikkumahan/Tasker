@@ -33,12 +33,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def get_user_settings():
-    print("[INFO] Fetching user settings and identity from Supabase...")
-    res = supabase.table("user_settings").select("*").limit(1).execute()
-    if not res.data:
-        raise ValueError("No user_settings row found. Run onboarding first.")
-    return res.data[0]
+# Settings are now fetched iteratively in main() loop for multi-tenancy
 
 def authenticate_gmail_stateless(settings_row):
     print("[INFO] Authenticating Gmail statelessly...")
@@ -132,8 +127,10 @@ def extract_tasks_with_llm(emails, settings_row):
         
     print(f"[INFO] Passing {len(emails)} emails to Sarvam-105b...")
     
+    user_id = settings_row.get("user_id")
+    
     # Let's fetch current pending tasks to avoid duplication (limit 100 to save tokens)
-    res = supabase.table("tasks").select("title, course, deadline").eq("status", "pending").limit(100).execute()
+    res = supabase.table("tasks").select("title, course, deadline").eq("status", "pending").eq("user_id", user_id).limit(100).execute()
     pending_tasks = json.dumps(res.data) if res.data else "None"
     
     user_profile = settings_row.get("user_profile", "A typical student.")
@@ -198,6 +195,7 @@ Rules:
                 
                 for t in extracted:
                     t["source_email_id"] = email["id"]
+                    t["user_id"] = user_id
                     # Sanitize the deadline in case the LLM returns the literal string "null" instead of actual JSON null type
                     if isinstance(t.get("deadline"), str) and t["deadline"].strip().lower() == "null":
                         t["deadline"] = None
@@ -219,7 +217,7 @@ def upsert_tasks(tasks):
     for task in tasks:
         try:
             # Check if it exists to handle updates vs inserts
-            existing = supabase.table("tasks").select("deadline").eq("source_email_id", task["source_email_id"]).execute()
+            existing = supabase.table("tasks").select("deadline").eq("source_email_id", task["source_email_id"]).eq("user_id", task["user_id"]).execute()
             
             if existing.data:
                 # Update path (checking if deadline changed)
@@ -228,7 +226,7 @@ def upsert_tasks(tasks):
                     task["updated"] = True
                     task["change_note"] = "Deadline or details were updated by a recent email."
                 
-                supabase.table("tasks").update(task).eq("source_email_id", task["source_email_id"]).execute()
+                supabase.table("tasks").update(task).eq("source_email_id", task["source_email_id"]).eq("user_id", task["user_id"]).execute()
             else:
                 # Insert path
                 supabase.table("tasks").insert(task).execute()
@@ -236,13 +234,27 @@ def upsert_tasks(tasks):
             print(f"[ERROR] Failed to upsert task {task.get('title')}: {e}")
 
 def main():
-    print("--- Starting Serverless Mail Sync ---")
-    settings = get_user_settings()
-    service = authenticate_gmail_stateless(settings)
-    emails = fetch_recent_emails(service)
-    tasks = extract_tasks_with_llm(emails, settings)
-    upsert_tasks(tasks)
-    print("--- Sync Complete ---")
+    print("--- Starting Serverless Multi-Tenant Mail Sync ---")
+    res = supabase.table("user_settings").select("*").execute()
+    users = res.data or []
+    
+    if not users:
+        print("[INFO] No active users with linked Gmail tokens found. Exiting.")
+        return
+        
+    for user_row in users:
+        user_id = user_row.get("user_id", "Unknown")
+        print(f"\n[INFO] --- Syncing Tenant: {user_id} ---")
+        try:
+            service = authenticate_gmail_stateless(user_row)
+            emails = fetch_recent_emails(service)
+            tasks = extract_tasks_with_llm(emails, user_row)
+            upsert_tasks(tasks)
+            print(f"[SUCCESS] Tenant {user_id} synced successfully.")
+        except Exception as e:
+            print(f"[ERROR] Sync crashed for user {user_id}. Attempting to safely continue to the next user. Fatal Error: {e}")
+            
+    print("\n--- All Tenants Sync Complete ---")
 
 if __name__ == "__main__":
     main()
