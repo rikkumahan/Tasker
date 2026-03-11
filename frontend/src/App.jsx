@@ -14,12 +14,21 @@ if (SUPABASE_URL && SUPABASE_KEY) {
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 }
 
+function parseLocalDate(isoStr) {
+  if (!isoStr) return null;
+  // Strip any 'Z' or '+00:00' timezone suffix forced by Postgres timestamptz
+  // This violently forces the browser to interpret the literal string as Local Time
+  const localIso = isoStr.replace(/(Z|[+-]\d{2}:\d{2})$/, '');
+  return new Date(localIso);
+}
+
 function getUrgencyLevel(deadline) {
   if (!deadline) return 'GREEN';
-  const target = startOfDay(new Date(deadline));
+  const parsed = parseLocalDate(deadline);
+  const target = startOfDay(parsed);
   const today = startOfDay(new Date());
 
-  if (isPast(new Date(deadline)) || isToday(new Date(deadline))) {
+  if (isPast(parsed) || isToday(parsed)) {
     return 'RED';
   }
 
@@ -33,7 +42,7 @@ function getUrgencyLevel(deadline) {
 
 function formatDeadline(iso) {
   if (!iso) return 'No deadline';
-  const d = new Date(iso);
+  const d = parseLocalDate(iso);
   const timeStr = format(d, 'h:mm a');
 
   if (isPast(d) && !isToday(d)) return `Overdue`;
