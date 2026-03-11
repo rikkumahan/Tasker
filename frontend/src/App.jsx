@@ -51,6 +51,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState({});
+  const [userSettings, setUserSettings] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -105,6 +106,18 @@ export default function App() {
     if (!error && data) {
       setTasks(data);
     }
+    
+    // Also fetch the user settings to get the dynamic last synced time
+    const { data: settingsData } = await supabase
+      .from('user_settings')
+      .select('last_synced_at')
+      .eq('user_id', session.user.id)
+      .single();
+      
+    if (settingsData) {
+       setUserSettings(settingsData);
+    }
+    
     setLoading(false);
   };
 
@@ -234,6 +247,11 @@ export default function App() {
           <p>{format(new Date(), 'EEEE, MMMM do')}</p>
         </div>
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          {userSettings?.last_synced_at && (
+             <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                Last synced: {format(new Date(userSettings.last_synced_at), 'h:mm a')}
+             </span>
+          )}
           <button
             onClick={handleManualSync}
             className={`sync-btn ${syncing ? 'spinning' : ''}`}

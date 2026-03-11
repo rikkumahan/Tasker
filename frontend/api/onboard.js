@@ -98,28 +98,33 @@ export default async function handler(req, res) {
        }
     }
 
-    // 3. Call Sarvam AI for Profile Generation (with fallback)
+    // 3. Call Sarvam AI for Profile Evolution
     const sarvamKey = process.env.SARVAM_API_KEY;
-    let user_profile = "A student managing academic and personal tasks.";
+    // Point 1: The "pre-common" seed profile to give the AI context.
+    let user_profile = "A person in a college who wants to organize their academic and personal responsibilities efficiently.";
     let categories = ["academic_deadline", "admin_notice", "opportunity", "campus_event", "security_warning"];
 
     if (sarvamKey && emailText) {
-        console.log("[INFO] Sending inbox payload to Sarvam AI...");
+        console.log("[INFO] Sending inbox payload to Sarvam AI to evolve seed profile...");
         const prompt = `
-You are an AI assistant helping a student organize their tasks.
-Look at the following sample of recent emails from their inbox.
+You are an AI tasked with deeply understanding a user so you can build them a hyper-personalized task manager.
+
+PRE-COMMON SEED PROFILE:
+"${user_profile}"
+
+Look at the following 50 recent emails from their inbox and EVOLVE that seed profile:
 
 Emails:
 ${emailText}
 
 Based on this content, perform two tasks:
-1. Write a 3 to 4 sentence \`user_profile\` summarizing who this user is, what their current life state is (e.g., student, job seeker), and what types of deadlines/events they care about.
-2. Define EXACTLY 5 broad categories that these emails can be grouped into for a task manager dashboard.
-Categories should be single snake_case strings (e.g., academic_deadline, club_event).
+1. Write a 3 to 4 sentence \`user_profile\` that builds upon the Seed Profile. Add highly specific details you found in their inbox (e.g., specific majors, clubs they are in, companies they are applying to, or types of regular deadlines they face).
+2. Define EXACTLY 5 broad categories that these emails can be grouped into for their dashboard.
+Categories should be single snake_case strings (e.g., technical_internship, lab_report).
 
 Return ONLY a JSON object with exactly these two keys:
 {
-  "user_profile": "detailed personality description here...",
+  "user_profile": "detailed evolved personality description here...",
   "categories": ["category_1", "category_2", "category_3", "category_4", "category_5"]
 }`;
         
@@ -159,6 +164,7 @@ Return ONLY a JSON object with exactly these two keys:
         user_id: user.id,
         user_profile,
         categories,
+        last_synced_at: new Date().toISOString(), // Track the precise sync epoch
         gmail_token: {
            token: providerToken, // Python explicitly expects 'token'
            refresh_token: providerRefreshToken || null

@@ -87,10 +87,27 @@ def decode_body(payload):
                 break
     return body.strip()
 
-def fetch_recent_emails(service):
-    # Fetch emails from the last 24 hours to prevent dropped emails if a schedule skips
-    yesterday = (datetime.now() - timedelta(hours=24)).strftime('%Y/%m/%d')
-    query = f"is:unread after:{yesterday}"
+def fetch_recent_emails(service, settings_row):
+    # Point 3: Incremental Syncing
+    last_synced_str = settings_row.get("last_synced_at")
+    
+    if last_synced_str:
+        # Convert ISO 8601 string to datetime, then to Unix Epoch for precise Gmail querying
+        try:
+            last_synced_dt = datetime.fromisoformat(last_synced_str.replace('Z', '+00:00'))
+            epoch = int(last_synced_dt.timestamp())
+            query = f"is:unread after:{epoch}"
+            print(f"[INFO] Incremental Sync from epoch {epoch} ({last_synced_str})")
+        except Exception as e:
+            print(f"[WARNING] Failed to parse last_synced_at: {e}. Falling back to 48 hours.")
+            epoch = int((datetime.now(timezone.utc) - timedelta(hours=48)).timestamp())
+            query = f"is:unread after:{epoch}"
+    else:
+        # Fallback for brand new users or missing data
+        print("[INFO] No last_synced_at found. Falling back to 48 hours.")
+        epoch = int((datetime.now(timezone.utc) - timedelta(hours=48)).timestamp())
+        query = f"is:unread after:{epoch}"
+        
     print(f"[INFO] Querying Gmail: {query}")
     
     result = service.users().messages().list(userId="me", q=query, maxResults=20).execute()
@@ -120,6 +137,84 @@ def fetch_recent_emails(service):
             print(f"[WARNING] Failed to parse email {msg['id']}: {e}")
             
     return parsed_emails
+
+def evolve_user_persona(emails, settings_row):
+    # Point 1, 4, 5: Continuous Profile Evolution
+    if not emails:
+        return settings_row
+        
+    print(f"[INFO] Evolving User Persona based on {len(emails)} new emails...")
+    
+    old_profile = settings_row.get("user_profile", "A person in a college who wants to organize their academic and personal responsibilities efficiently.")
+    old_categories = settings_row.get("categories", [])
+    
+    # Bundle emails into a string block (truncated for tokens)
+    email_texts = []
+    for e in emails[:10]: # Use up to 10 latest for profile evolution to save tokens
+        email_texts.append(f"Subject: {e['subject']}\nBody: {e['body'][:500]}")
+    email_block = "\n---\n".join(email_texts)
+    
+    prompt = f"""
+You are an AI tasked with deeply understanding a user so you can build them a hyper-personalized task manager.
+
+CURRENT USER PROFILE:
+"{old_profile}"
+
+CURRENT CATEGORIES:
+{old_categories}
+
+Look at their newest emails and EVOLVE their profile if necessary:
+
+Emails:
+{email_block}
+
+Based on this content:
+1. Write a 3 to 4 sentence \`user_profile\` that updates the CURRENT USER PROFILE. Add highly specific details you found in their inbox.
+2. Define EXACTLY 5 broad categories for their dashboard. You can keep the old ones or invent new ones if their life is shifting.
+Categories should be single snake_case strings.
+
+Return ONLY a JSON object with exactly these two keys:
+{{
+  "user_profile": "detailed evolved personality description here...",
+  "categories": ["category_1", "category_2", "category_3", "category_4", "category_5"]
+}}
+"""
+    headers = {
+        "Authorization": f"Bearer {SARVAM_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "sarvam-105b",
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    
+    try:
+        resp = httpx.post("https://api.sarvam.ai/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+        if resp.status_code == 200:
+            reply = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            cleaned = reply.strip().strip("```json").strip("```").strip()
+            parsed = json.loads(cleaned)
+            
+            if "user_profile" in parsed and "categories" in parsed:
+                # Point 10: Zero retention, delete email strings from ram immediately
+                del email_block
+                del email_texts
+                
+                print("[SUCCESS] Persona Evolved dynamically.")
+                # Update Supabase
+                supabase.table("user_settings").update({
+                    "user_profile": parsed["user_profile"],
+                    "categories": parsed["categories"]
+                }).eq("id", settings_row["id"]).execute()
+                
+                # Update local row memory for task extraction
+                settings_row["user_profile"] = parsed["user_profile"]
+                settings_row["categories"] = parsed["categories"]
+                
+    except Exception as e:
+        print(f"[WARNING] Failed to evolve persona: {e}")
+        
+    return settings_row
 
 def extract_tasks_with_llm(emails, settings_row):
     if not emails:
@@ -168,7 +263,7 @@ Return ONLY a JSON array. Each element is one task from the email:
   {{
     "title": "short task name e.g. DAA Quiz",
     "course": "course name e.g. DAA",
-    "deadline": "ISO 8601 datetime or null if unclear",
+    "deadline": "Extract the literal DATE mentioned in the text (e.g., 'Friday 5PM') converted to ISO 8601. If no exact date/time is explicitly written, return null. DO NOT GUESS.",
     "location": "room/venue or null",
     "summary": "1-2 sentence plain English summary",
     "category": "String. Pick ONE category from this user list: {categories}. If none fit perfectly, invent a concise new 1-word or 2-word label snake_case."
@@ -260,10 +355,22 @@ def main():
         print(f"\n[INFO] --- Syncing Tenant: {user_id} ---")
         try:
             service = authenticate_gmail_stateless(user_row)
-            emails = fetch_recent_emails(service)
-            tasks = extract_tasks_with_llm(emails, user_row)
+            emails = fetch_recent_emails(service, user_row)
+            
+            # 1. Evolve Persona first
+            evolved_row = evolve_user_persona(emails, user_row)
+            
+            # 2. Extract Tasks
+            tasks = extract_tasks_with_llm(emails, evolved_row)
+            
+            # 3. Save Tasks
             upsert_tasks(tasks)
-            print(f"[SUCCESS] Tenant {user_id} synced successfully.")
+            
+            # 4. Point 3: Transactional Update of Sync Clock (ONLY on success)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            supabase.table("user_settings").update({"last_synced_at": now_iso}).eq("id", user_row["id"]).execute()
+            
+            print(f"[SUCCESS] Tenant {user_id} synced successfully. Clock updated to {now_iso}.")
         except Exception as e:
             print(f"[ERROR] Sync crashed for user {user_id}. Attempting to safely continue to the next user. Fatal Error: {e}")
             traceback.print_exc()
