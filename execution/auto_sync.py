@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone, timedelta
 import httpx
 from dotenv import load_dotenv
+import traceback
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -189,13 +190,21 @@ Rules:
         try:
             resp = httpx.post("https://api.sarvam.ai/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
             if resp.status_code == 200:
-                reply = resp.json()["choices"][0]["message"]["content"]
+                reply = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not reply:
+                    print(f"[WARNING] Sarvam AI returned empty content for email {email['id']}. Skipping.")
+                    time.sleep(1.5)
+                    continue
+                    
                 cleaned = reply.strip().strip("```json").strip("```").strip()
                 extracted = json.loads(cleaned)
                 
                 for t in extracted:
                     t["source_email_id"] = email["id"]
                     t["user_id"] = user_id
+                    # Strip LLM hallucinated 'id' keys so it doesn't break Supabase UUID generation
+                    if "id" in t:
+                        del t["id"]
                     # Sanitize the deadline in case the LLM returns the literal string "null" instead of actual JSON null type
                     if isinstance(t.get("deadline"), str) and t["deadline"].strip().lower() == "null":
                         t["deadline"] = None
@@ -243,7 +252,11 @@ def main():
         return
         
     for user_row in users:
-        user_id = user_row.get("user_id", "Unknown")
+        user_id = user_row.get("user_id")
+        if not user_id:
+            print(f"[WARNING] Skipping legacy user_settings row {user_row.get('id')} because user_id is missing.")
+            continue
+            
         print(f"\n[INFO] --- Syncing Tenant: {user_id} ---")
         try:
             service = authenticate_gmail_stateless(user_row)
@@ -253,6 +266,7 @@ def main():
             print(f"[SUCCESS] Tenant {user_id} synced successfully.")
         except Exception as e:
             print(f"[ERROR] Sync crashed for user {user_id}. Attempting to safely continue to the next user. Fatal Error: {e}")
+            traceback.print_exc()
             
     print("\n--- All Tenants Sync Complete ---")
 
