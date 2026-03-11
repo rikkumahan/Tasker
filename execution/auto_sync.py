@@ -263,7 +263,8 @@ Return ONLY a JSON array. Each element is one task from the email:
   {{
     "title": "short task name e.g. DAA Quiz",
     "course": "course name e.g. DAA",
-    "deadline": "Extract the literal DATE mentioned. If it is an event, use the START TIME. Convert to ISO 8601 format WITHOUT the 'Z' timezone suffix (e.g. '2026-03-12T16:00:00') to remain in local time. If no exact date/time is written, return null. DO NOT GUESS.",
+    "deadline": "The START TIME of the event, or the exact deadline. Convert to ISO 8601 format WITHOUT the 'Z' timezone suffix (e.g. '2026-03-12T16:00:00') to remain in local time. If no exact time is explicitly written, return ONLY the date at midnight (e.g. '2026-03-12T00:00:00'). DO NOT GUESS times.",
+    "end_time": "The END TIME of the event, if explicitly mentioned, in ISO 8601 WITHOUT the 'Z' (e.g. '2026-03-12T20:00:00'). If no end time is stated, return null.",
     "location": "room/venue or null",
     "summary": "1-2 sentence plain English summary",
     "category": "String. Pick ONE category from this user list: {categories}. If none fit perfectly, invent a concise new 1-word or 2-word label snake_case."

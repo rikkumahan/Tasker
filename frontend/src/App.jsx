@@ -40,18 +40,33 @@ function getUrgencyLevel(deadline) {
   return 'GREEN';
 }
 
-function formatDeadline(iso) {
+function formatDeadline(iso, isoEnd) {
   if (!iso) return 'No deadline';
   const d = parseLocalDate(iso);
-  const timeStr = format(d, 'h:mm a');
+  
+  const isMidnight = d.getHours() === 0 && d.getMinutes() === 0;
+  let timeStr = format(d, 'h:mm a');
+  
+  if (isMidnight) {
+     timeStr = ''; // It's an "All Day" event just showing the date
+  }
+
+  if (isoEnd) {
+     const endD = parseLocalDate(isoEnd);
+     if (!isMidnight) {
+         timeStr += ` - ${format(endD, 'h:mm a')}`;
+     }
+  }
+
+  const suffix = timeStr ? ` ${timeStr}` : '';
 
   if (isPast(d) && !isToday(d)) return `Overdue`;
-  if (isToday(d)) return `Today ${timeStr}`;
-  if (isTomorrow(d)) return `Tomorrow ${timeStr}`;
+  if (isToday(d)) return `Today${suffix}`;
+  if (isTomorrow(d)) return `Tomorrow${suffix}`;
 
   const diffDays = differenceInDays(startOfDay(d), startOfDay(new Date()));
-  if (diffDays < 7) return `${format(d, 'EEE')} ${timeStr}`;
-  return `${format(d, 'MMM d')} ${timeStr}`;
+  if (diffDays < 7) return `${format(d, 'EEE')}${suffix}`;
+  return `${format(d, 'MMM d')}${suffix}`;
 }
 
 export default function App() {
@@ -346,7 +361,7 @@ function TaskCard({ task, onToggleStar, onComplete }) {
             {task.course && <span className="course-badge">{task.course}</span>}
           </div>
           <div className="task-meta">
-            <span className={`task-deadline`}>{formatDeadline(task.deadline)}</span>
+            <span className={`task-deadline`}>{formatDeadline(task.deadline, task.end_time)}</span>
             {task.warnings?.length > 0 && <span className="warning-badge">⚠️</span>}
             {task.updated && <span className="update-badge" title={task.change_note}>🔄</span>}
           </div>
