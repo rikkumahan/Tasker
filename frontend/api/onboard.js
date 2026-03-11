@@ -42,7 +42,7 @@ export default async function handler(req, res) {
       // In case they just logged back in and their token refreshed
       await supabase.from('user_settings').update({
         gmail_token: {
-           access_token: providerToken,
+           token: providerToken, // Python Credentials object expects 'token', not 'access_token'
            refresh_token: providerRefreshToken || null
         }
       }).eq('user_id', user.id);
@@ -80,7 +80,10 @@ export default async function handler(req, res) {
               let body = "";
               const extractBody = (part) => {
                   if (part.mimeType === 'text/plain' && part.body?.data) {
-                      body += Buffer.from(part.body.data, 'base64').toString('utf8');
+                      // Gmail uses Base64URL encoding (uses '-' and '_') which Node can struggle with natively, 
+                      // so we safely replace them with standard Base64 characters ('+' and '/')
+                      const safeB64 = part.body.data.replace(/-/g, '+').replace(/_/g, '/');
+                      body += Buffer.from(safeB64, 'base64').toString('utf8');
                   } else if (part.parts) {
                       part.parts.forEach(extractBody);
                   }
@@ -157,7 +160,7 @@ Return ONLY a JSON object with exactly these two keys:
         user_profile,
         categories,
         gmail_token: {
-           access_token: providerToken,
+           token: providerToken, // Python explicitly expects 'token'
            refresh_token: providerRefreshToken || null
         }
     }]);
