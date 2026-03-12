@@ -45,7 +45,7 @@ def authenticate_gmail_stateless(settings_row):
     # Reconstruct the Credentials object using the DB token and ENV secrets
     creds = Credentials(
         token=token_data.get("token"),
-        refresh_token=token_data.get("refresh_token"),
+        refresh_token=token_data.get("refresh_token") or "",
         token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=GMAIL_CLIENT_ID or token_data.get("client_id"),
         client_secret=GMAIL_CLIENT_SECRET or token_data.get("client_secret"),

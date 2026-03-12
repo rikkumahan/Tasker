@@ -14,7 +14,7 @@ export default function Auth({ supabase }) {
           scopes: 'https://www.googleapis.com/auth/gmail.readonly',
           queryParams: {
             access_type: 'offline',
-            prompt: 'consent',
+            prompt: 'consent', // FORCES Google to return a refresh_token every single login, stopping the backend crash
           },
           redirectTo: window.location.origin
         }
