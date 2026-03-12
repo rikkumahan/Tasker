@@ -159,12 +159,13 @@ Return ONLY a JSON object with exactly these two keys:
     }
 
     // 4. Save entire payload to Supabase
-    // This completes the zero-terminal onboarding process
+    // This completes the zero-terminal onboarding process.
+    // We intentionally DO NOT set last_synced_at here. By leaving it NULL,
+    // the auto_sync script will trigger its 48-hour fallback to hydrate their empty dashboard.
     const { error: insertError } = await supabase.from('user_settings').insert([{
         user_id: user.id,
         user_profile,
         categories,
-        last_synced_at: new Date().toISOString(), // Track the precise sync epoch
         gmail_token: {
            token: providerToken, // Python explicitly expects 'token'
            refresh_token: providerRefreshToken || null
