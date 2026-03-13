@@ -15,6 +15,9 @@ import httpx
 from dotenv import load_dotenv
 import traceback
 
+# IST = UTC+5:30 (used for accurate overdue detection in LLM prompt)
+IST = timezone(timedelta(hours=5, minutes=30))
+
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -96,21 +99,21 @@ def fetch_recent_emails(service, settings_row):
         try:
             last_synced_dt = datetime.fromisoformat(last_synced_str.replace('Z', '+00:00'))
             epoch = int(last_synced_dt.timestamp())
-            query = f"is:unread after:{epoch}"
+            query = f"after:{epoch}"  # Removed is:unread — reading on phone should not block extraction
             print(f"[INFO] Incremental Sync from epoch {epoch} ({last_synced_str})")
         except Exception as e:
             print(f"[WARNING] Failed to parse last_synced_at: {e}. Falling back to 48 hours.")
             epoch = int((datetime.now(timezone.utc) - timedelta(hours=48)).timestamp())
-            query = f"is:unread after:{epoch}"
+            query = f"after:{epoch}"
     else:
-        # Fallback for brand new users or missing data
+        # Fallback for brand new users or missing data — sweep last 48 hours
         print("[INFO] No last_synced_at found. Falling back to 48 hours.")
         epoch = int((datetime.now(timezone.utc) - timedelta(hours=48)).timestamp())
-        query = f"is:unread after:{epoch}"
+        query = f"after:{epoch}"  # No is:unread — rely purely on timestamp epoch
         
     print(f"[INFO] Querying Gmail: {query}")
     
-    result = service.users().messages().list(userId="me", q=query, maxResults=20).execute()
+    result = service.users().messages().list(userId="me", q=query, maxResults=25).execute()
     messages = result.get("messages", [])
     
     parsed_emails = []
@@ -239,11 +242,22 @@ def extract_tasks_with_llm(emails, settings_row):
         "Content-Type": "application/json"
     }
 
-    # Process each email individually to maintain clean JSON structure (Sarvam handles batches poorly sometimes)
+    # Process each email individually to maintain clean JSON structure
     for email in emails:
+        # GAP 2 FIX: Pre-filter by source_email_id BEFORE calling LLM (saves tokens)
+        existing_check = supabase.table("tasks").select("id").eq("source_email_id", email["id"]).eq("user_id", user_id).execute()
+        if existing_check.data:
+            print(f"[INFO] Email {email['id']} already processed. Skipping LLM call.")
+            continue
+
+        # GAP 3 FIX: Inject current IST time so LLM can discard overdue tasks accurately
+        now_ist = datetime.now(IST).strftime("%Y-%m-%dT%H:%M:%S")
         prompt = f"""
 You are an academic and personal productivity assistant. 
 Your goal is to extract new tasks and events from the incoming email WITHOUT duplicating existing tasks.
+
+CURRENT DATE AND TIME (Indian Standard Time / IST): {now_ist}
+Do NOT extract tasks whose deadline has already passed before this current time.
 
 USER CONTEXT & PERSONALITY PROFILE:
 "{user_profile}"
@@ -301,9 +315,12 @@ Rules:
                     # Strip LLM hallucinated 'id' keys so it doesn't break Supabase UUID generation
                     if "id" in t:
                         del t["id"]
-                    # Sanitize the deadline in case the LLM returns the literal string "null" instead of actual JSON null type
+                    # Sanitize deadline string 'null'
                     if isinstance(t.get("deadline"), str) and t["deadline"].strip().lower() == "null":
                         t["deadline"] = None
+                    # Sanitize end_time string 'null'
+                    if isinstance(t.get("end_time"), str) and t["end_time"].strip().lower() == "null":
+                        t["end_time"] = None
                     tasks_to_insert.append(t)
             else:
                 print(f"[ERROR] Sarvam returned {resp.status_code}: {resp.text}")

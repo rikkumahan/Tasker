@@ -2,15 +2,21 @@ name: Tasker Auto-Sync
 
 on:
   schedule:
-    - cron: '0 */2 * * *' # Run every 2 hours
+    - cron: '0 */2 * * *' # Every 2 hours
   repository_dispatch:
-    types: [manual-refresh] # This allows the Vercel Frontend to trigger it on-demand
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
+    types: [manual-refresh]
+  workflow_dispatch:
+
+# CRITICAL: Queue concurrent runs instead of running them in parallel.
+# This prevents button spam from spinning up duplicate runners.
+concurrency:
+  group: tasker-global-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -19,7 +25,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip

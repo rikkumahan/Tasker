@@ -1,0 +1,41 @@
+{
+  "name": "Tasker AI",
+  "short_name": "Tasker",
+  "description": "Your inbox, intelligently organized by AI.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0d1a",
+  "theme_color": "#1a1a2e",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "View Deadlines",
+      "short_name": "Deadlines",
+      "description": "Open the Glance Mode mini-view",
+      "url": "/widget",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Sync Now",
+      "short_name": "Sync",
+      "description": "Trigger an immediate inbox scan",
+      "url": "/?sync=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "categories": ["productivity", "education", "utilities"]
+}

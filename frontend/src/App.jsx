@@ -74,74 +74,76 @@ export default function App() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncCountdown, setSyncCountdown] = useState(0); // seconds left in countdown
   const [expandedCategories, setExpandedCategories] = useState({});
   const [userSettings, setUserSettings] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchTasks();
+      if (session) fetchTasks(session);
     });
 
     supabase.auth.onAuthStateChange(async (_event, newSession) => {
       setSession(newSession);
       if (newSession) {
-        // If login successful, trigger our onboard function to save tokens/profile
         if (_event === 'SIGNED_IN') {
-             // We can extract provider_token/refresh from newSession here or rely on the backend via cookie.
-             // Vercel serverless handles token via `supabase.auth.getSession()` securely if cookies are set
-             handleOnboarding(newSession);
+          handleOnboarding(newSession);
         }
-        fetchTasks();
+        fetchTasks(newSession);
       } else {
         setTasks([]);
       }
     });
 
-    // Realtime subscription
+    // Realtime subscription — refreshes task list on any DB change
     let channel = null;
     if (supabase) {
       channel = supabase
         .channel('tasks-realtime')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, (payload) => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
           fetchTasks();
         })
         .subscribe();
     }
 
     return () => {
-      if (channel && supabase) {
-        supabase.removeChannel(channel);
-      }
+      if (channel && supabase) supabase.removeChannel(channel);
     };
   }, []);
 
-  const fetchTasks = async () => {
-    if (!supabase || !session) {
-      setLoading(false);
-      return;
-    }
+  const fetchTasks = async (sess) => {
+    const activeSess = sess || session;
+    if (!supabase || !activeSess) { setLoading(false); return; }
     setLoading(true);
+
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
+      .eq('user_id', activeSess.user.id)
       .order('deadline', { ascending: true, nullsFirst: false });
+    if (!error && data) setTasks(data);
 
-    if (!error && data) {
-      setTasks(data);
-    }
-    
-    // Also fetch the user settings to get the dynamic last synced time
+    // Fetch user settings for synced time + trigger lock
     const { data: settingsData } = await supabase
       .from('user_settings')
-      .select('last_synced_at')
-      .eq('user_id', session.user.id)
+      .select('last_synced_at, last_sync_triggered_at')
+      .eq('user_id', activeSess.user.id)
       .single();
-      
+
     if (settingsData) {
-       setUserSettings(settingsData);
+      setUserSettings(settingsData);
+
+      // Phase 8: Auto-sync if data is stale (> 30 minutes)
+      const lastSync = settingsData.last_synced_at;
+      if (lastSync) {
+        const minsAgo = (Date.now() - new Date(lastSync).getTime()) / 60000;
+        if (minsAgo > 30) {
+          console.log('[INFO] Data stale (> 30 min). Triggering silent background sync.');
+          triggerSync(activeSess);
+        }
+      }
     }
-    
     setLoading(false);
   };
 
@@ -170,25 +172,45 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleManualSync = async () => {
-    setSyncing(true);
-    try {
-      // Hit the Vercel backend to trigger the GitHub Action securely
-      const response = await fetch('/api/sync', { method: 'POST' });
+  // Core sync trigger — shared by button AND auto-stale check
+  const triggerSync = async (sess) => {
+    const activeSess = sess || session;
+    if (!activeSess) return;
 
-      if (response.ok) {
-        // The action takes time to run emails, poll for new data after 5 seconds
-        setTimeout(fetchTasks, 5000);
-      } else {
-        console.error("Failed to trigger API sync");
-        await fetchTasks();
+    // Phase 8: Check if sync was triggered recently (60s lock)
+    if (userSettings?.last_sync_triggered_at) {
+      const secsAgo = (Date.now() - new Date(userSettings.last_sync_triggered_at).getTime()) / 1000;
+      if (secsAgo < 60) {
+        console.log('[INFO] Sync locked — triggered recently. Skipping.');
+        return;
       }
-    } catch (e) {
-      console.error(e);
-      await fetchTasks();
     }
-    setTimeout(() => setSyncing(false), 2000);
+
+    setSyncing(true);
+    // Start 90-second countdown
+    let count = 90;
+    setSyncCountdown(count);
+    const timer = setInterval(() => {
+      count -= 1;
+      setSyncCountdown(count);
+      if (count <= 0) clearInterval(timer);
+    }, 1000);
+
+    try {
+      await fetch('/api/sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${activeSess.access_token}` }
+      });
+      // Poll for fresh data after engine completes (~45s)
+      setTimeout(() => fetchTasks(activeSess), 45000);
+    } catch (e) {
+      console.error('Sync trigger error:', e);
+    }
+
+    setTimeout(() => { setSyncing(false); setSyncCountdown(0); clearInterval(timer); }, 92000);
   };
+
+  const handleManualSync = () => triggerSync();
 
   const toggleStar = async (e, task) => {
     e.stopPropagation();
@@ -271,16 +293,20 @@ export default function App() {
           <p>{format(new Date(), 'EEEE, MMMM do')}</p>
         </div>
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-          {userSettings?.last_synced_at && (
-             <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                Last synced: {format(new Date(userSettings.last_synced_at), 'h:mm a')}
-             </span>
+          {syncCountdown > 0 ? (
+            <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }}>
+              ⚡ Syncing... {syncCountdown}s
+            </span>
+          ) : userSettings?.last_synced_at && (
+            <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+              Last synced: {format(parseLocalDate(userSettings.last_synced_at), 'h:mm a')}
+            </span>
           )}
           <button
             onClick={handleManualSync}
             className={`sync-btn ${syncing ? 'spinning' : ''}`}
-            disabled={syncing || !supabase}
-            title="Refresh Inbox"
+            disabled={syncing || !supabase || syncCountdown > 0}
+            title={syncCountdown > 0 ? `Sync in progress (${syncCountdown}s)` : 'Refresh Inbox'}
           >
             <RefreshCw size={20} />
           </button>
