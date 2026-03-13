@@ -321,7 +321,7 @@ export default function App() {
             </span>
           ) : userSettings?.last_synced_at && (
             <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-              Last synced: {format(parseLocalDate(userSettings.last_synced_at), 'h:mm a')}
+              Last synced: {format(new Date(userSettings.last_synced_at), 'h:mm a')}
             </span>
           )}
           <button
