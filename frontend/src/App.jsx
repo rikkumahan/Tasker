@@ -200,14 +200,41 @@ export default function App() {
         method: 'POST',
         headers: { Authorization: `Bearer ${activeSess.access_token}` }
       });
-      // Poll for fresh data after ~45s (engine runtime)
-      setTimeout(() => fetchTasks(activeSess), 45000);
     } catch (e) {
       console.error('Sync trigger error:', e);
+      setSyncing(false);
+      return;
     }
 
-    // Keep spinner for 60s, then stop
-    setTimeout(() => setSyncing(false), 60000);
+    // Poll GitHub Actions status every 5s — stop spinner when runner is done
+    const triggeredAt = Date.now();
+    const MAX_WAIT_MS = 5 * 60 * 1000; // 5 min safety cap
+
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch('/api/sync-status');
+        const { status, started_at } = await res.json();
+
+        // Only consider runs started AFTER we triggered (avoid matching a stale previous run)
+        const runStarted = started_at ? new Date(started_at).getTime() : 0;
+        const isOurRun = runStarted >= triggeredAt - 15000; // 15s tolerance for queuing delay
+
+        if (isOurRun && status === 'completed') {
+          clearInterval(poll);
+          setSyncing(false);
+          fetchTasks(activeSess); // Fetch fresh tasks the moment run finishes
+          console.log('[INFO] GitHub Action completed. Tasks refreshed.');
+          return;
+        }
+      } catch (_) { /* silent — keep polling */ }
+
+      // Hard cap: stop after 5 minutes no matter what
+      if (Date.now() - triggeredAt > MAX_WAIT_MS) {
+        clearInterval(poll);
+        setSyncing(false);
+        fetchTasks(activeSess);
+      }
+    }, 5000);
   };
 
   const handleManualSync = () => triggerSync();
