@@ -74,14 +74,11 @@ export default function App() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [syncCountdown, setSyncCountdown] = useState(0);
   const [expandedCategories, setExpandedCategories] = useState({});
   const [userSettings, setUserSettings] = useState(null);
 
-  // BUG FIX 1: Store session in a ref so the realtime listener closure always sees the latest value
+  // Store session in a ref so realtime listeners always see the latest value
   const sessionRef = React.useRef(null);
-  // BUG FIX 2: Single timer ref — prevents stacking intervals if triggerSync is called rapidly
-  const countdownRef = React.useRef(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -182,12 +179,11 @@ export default function App() {
   };
 
   // Core sync trigger — shared by button AND auto-stale check
-  // BUG FIX 4: Accept freshSettings param so it never reads stale React state
   const triggerSync = async (sess, freshSettings) => {
     const activeSess = sess || sessionRef.current;
     if (!activeSess) return;
 
-    // 60-second debounce lock — use freshSettings if provided, else fall back to state
+    // 60-second debounce lock via DB timestamp
     const settings = freshSettings || userSettings;
     if (settings?.last_sync_triggered_at) {
       const secsAgo = (Date.now() - new Date(settings.last_sync_triggered_at).getTime()) / 1000;
@@ -197,39 +193,21 @@ export default function App() {
       }
     }
 
-    // BUG FIX 2: Clear any existing timer before starting a new one
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current);
-      countdownRef.current = null;
-    }
-
     setSyncing(true);
-    let count = 90;
-    setSyncCountdown(count);
-    countdownRef.current = setInterval(() => {
-      count -= 1;
-      setSyncCountdown(count);
-      if (count <= 0) {
-        clearInterval(countdownRef.current);
-        countdownRef.current = null;
-      }
-    }, 1000);
 
     try {
       await fetch('/api/sync', {
         method: 'POST',
         headers: { Authorization: `Bearer ${activeSess.access_token}` }
       });
+      // Poll for fresh data after ~45s (engine runtime)
       setTimeout(() => fetchTasks(activeSess), 45000);
     } catch (e) {
       console.error('Sync trigger error:', e);
     }
 
-    setTimeout(() => {
-      setSyncing(false);
-      setSyncCountdown(0);
-      if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
-    }, 92000);
+    // Keep spinner for 60s, then stop
+    setTimeout(() => setSyncing(false), 60000);
   };
 
   const handleManualSync = () => triggerSync();
@@ -315,9 +293,9 @@ export default function App() {
           <p>{format(new Date(), 'EEEE, MMMM do')}</p>
         </div>
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-          {syncCountdown > 0 ? (
+          {syncing ? (
             <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }}>
-              ⚡ Syncing... {syncCountdown}s
+              ⚡ Syncing...
             </span>
           ) : userSettings?.last_synced_at && (
             <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
@@ -327,8 +305,8 @@ export default function App() {
           <button
             onClick={handleManualSync}
             className={`sync-btn ${syncing ? 'spinning' : ''}`}
-            disabled={syncing || !supabase || syncCountdown > 0}
-            title={syncCountdown > 0 ? `Sync in progress (${syncCountdown}s)` : 'Refresh Inbox'}
+            disabled={syncing || !supabase}
+            title={syncing ? 'Sync in progress...' : 'Refresh Inbox'}
           >
             <RefreshCw size={20} />
           </button>
