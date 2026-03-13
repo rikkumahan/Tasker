@@ -74,20 +74,29 @@ export default function App() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [syncCountdown, setSyncCountdown] = useState(0); // seconds left in countdown
+  const [syncCountdown, setSyncCountdown] = useState(0);
   const [expandedCategories, setExpandedCategories] = useState({});
   const [userSettings, setUserSettings] = useState(null);
 
+  // BUG FIX 1: Store session in a ref so the realtime listener closure always sees the latest value
+  const sessionRef = React.useRef(null);
+  // BUG FIX 2: Single timer ref — prevents stacking intervals if triggerSync is called rapidly
+  const countdownRef = React.useRef(null);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
+      sessionRef.current = session;
       setSession(session);
       if (session) fetchTasks(session);
     });
 
     supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      sessionRef.current = newSession;
       setSession(newSession);
       if (newSession) {
-        if (_event === 'SIGNED_IN') {
+        // BUG FIX 3: Only onboard on true first-time SIGNED_IN, not on session restores.
+        // Session restores fire SIGNED_IN too, but provider_token is null for restores.
+        if (_event === 'SIGNED_IN' && newSession.provider_token) {
           handleOnboarding(newSession);
         }
         fetchTasks(newSession);
@@ -96,13 +105,13 @@ export default function App() {
       }
     });
 
-    // Realtime subscription — refreshes task list on any DB change
+    // Realtime subscription — BUG FIX 1: use sessionRef so the closure is never stale
     let channel = null;
     if (supabase) {
       channel = supabase
         .channel('tasks-realtime')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-          fetchTasks();
+          if (sessionRef.current) fetchTasks(sessionRef.current);
         })
         .subscribe();
     }
@@ -113,7 +122,7 @@ export default function App() {
   }, []);
 
   const fetchTasks = async (sess) => {
-    const activeSess = sess || session;
+    const activeSess = sess || sessionRef.current;
     if (!supabase || !activeSess) { setLoading(false); return; }
     setLoading(true);
 
@@ -134,13 +143,13 @@ export default function App() {
     if (settingsData) {
       setUserSettings(settingsData);
 
-      // Phase 8: Auto-sync if data is stale (> 30 minutes)
+      // BUG FIX 4: Pass settingsData directly to triggerSync — avoids stale userSettings state
       const lastSync = settingsData.last_synced_at;
       if (lastSync) {
         const minsAgo = (Date.now() - new Date(lastSync).getTime()) / 60000;
         if (minsAgo > 30) {
           console.log('[INFO] Data stale (> 30 min). Triggering silent background sync.');
-          triggerSync(activeSess);
+          triggerSync(activeSess, settingsData);
         }
       }
     }
@@ -173,27 +182,37 @@ export default function App() {
   };
 
   // Core sync trigger — shared by button AND auto-stale check
-  const triggerSync = async (sess) => {
-    const activeSess = sess || session;
+  // BUG FIX 4: Accept freshSettings param so it never reads stale React state
+  const triggerSync = async (sess, freshSettings) => {
+    const activeSess = sess || sessionRef.current;
     if (!activeSess) return;
 
-    // Phase 8: Check if sync was triggered recently (60s lock)
-    if (userSettings?.last_sync_triggered_at) {
-      const secsAgo = (Date.now() - new Date(userSettings.last_sync_triggered_at).getTime()) / 1000;
+    // 60-second debounce lock — use freshSettings if provided, else fall back to state
+    const settings = freshSettings || userSettings;
+    if (settings?.last_sync_triggered_at) {
+      const secsAgo = (Date.now() - new Date(settings.last_sync_triggered_at).getTime()) / 1000;
       if (secsAgo < 60) {
         console.log('[INFO] Sync locked — triggered recently. Skipping.');
         return;
       }
     }
 
+    // BUG FIX 2: Clear any existing timer before starting a new one
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+
     setSyncing(true);
-    // Start 90-second countdown
     let count = 90;
     setSyncCountdown(count);
-    const timer = setInterval(() => {
+    countdownRef.current = setInterval(() => {
       count -= 1;
       setSyncCountdown(count);
-      if (count <= 0) clearInterval(timer);
+      if (count <= 0) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
     }, 1000);
 
     try {
@@ -201,13 +220,16 @@ export default function App() {
         method: 'POST',
         headers: { Authorization: `Bearer ${activeSess.access_token}` }
       });
-      // Poll for fresh data after engine completes (~45s)
       setTimeout(() => fetchTasks(activeSess), 45000);
     } catch (e) {
       console.error('Sync trigger error:', e);
     }
 
-    setTimeout(() => { setSyncing(false); setSyncCountdown(0); clearInterval(timer); }, 92000);
+    setTimeout(() => {
+      setSyncing(false);
+      setSyncCountdown(0);
+      if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+    }, 92000);
   };
 
   const handleManualSync = () => triggerSync();
