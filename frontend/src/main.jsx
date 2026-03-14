@@ -13,6 +13,15 @@ if (window.location.search.includes('sync=1')) {
   window.history.replaceState({}, '', '/');
 }
 
+// Phase 10: Register PWA Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => console.log('[SW] Registered:', reg.scope))
+      .catch(err => console.log('[SW] Registration failed:', err));
+  });
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     {isWidgetView ? <Widget /> : <App />}
