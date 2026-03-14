@@ -11,3 +11,16 @@ then load his/her recent mails(atleast fetch 50 mails to understand the person (
 9) To reduce the traffic of the tasks or content we make them fade away after 24hrs, this isn't applicable for tasks with dates present on. 
 10) We should never store the direct form of user's mails in the system.
 11) context/tasks of the user should be static on the page.
+ /////////
+ work on ,
+1) multiple email loop (need to find for the recent mail from there)
+2) user's confused whether the application is working or not during the wait time.(we need to fix that by showing them wait-time and cancel receiving the triggers during this.)
+3) sometimes we press it lot of times, so it those many times and get lot of load (or) even it may crash.
+4) refresh automatically without pressing when we open it.
+
+how to make it powerful so, multiple users can interact at a time (for free).
+
+[remember it's reading only the recent unread mails] feature or flaw ??
+////////
+
+problem : github actions is taking too much time to run the auto_sync.py file for new users. we need to fix it.
