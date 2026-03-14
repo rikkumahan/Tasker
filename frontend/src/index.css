@@ -84,6 +84,16 @@ body {
   }
 }
 
+.pulse {
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
 /* Main Content */
 .main-content {
   display: flex;
@@ -202,6 +212,20 @@ body {
   border-left: 4px solid var(--green-color);
 }
 
+.task-card.overdue {
+  border-left-color: var(--red-color);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+}
+
+.task-card {
+  animation: fadeIn 0.4s ease-out backwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .task-card:hover {
   background: rgba(0, 0, 0, 0.3);
   transform: translateY(-2px);
@@ -291,6 +315,11 @@ body {
 
 .star-btn.active {
   color: var(--yellow-color);
+}
+
+.delete-btn:hover {
+  color: var(--red-color);
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .complete-btn {

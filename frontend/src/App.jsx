@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { differenceInDays, isPast, isToday, isTomorrow, format, startOfDay } from 'date-fns';
-import { ChevronDown, ChevronRight, Star, ExternalLink, RefreshCw, LogOut } from 'lucide-react';
+import { ChevronDown, ChevronRight, Star, ExternalLink, RefreshCw, LogOut, Trash2, AlertCircle } from 'lucide-react';
 import Auth from './Auth';
 import './index.css';
 
@@ -261,6 +261,15 @@ export default function App() {
     }));
   };
 
+  const deleteTask = async (e, task) => {
+    e.stopPropagation();
+    if (!window.confirm("Permanently delete this task?")) return;
+    
+    // Optimistic delete
+    setTasks(prev => prev.filter(t => t.id !== task.id));
+    await supabase.from('tasks').delete().eq('id', task.id);
+  };
+
   // Filter & Group tasks
   const pendingTasks = tasks.filter(t => {
     if (t.status === 'completed') return false;
@@ -330,9 +339,14 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
           {syncing ? (
-            <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }} className="pulse">
               ⚡ Syncing...
             </span>
+          ) : userSettings?.last_sync_error ? (
+            <div title={userSettings.last_sync_error} style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}>
+               <AlertCircle size={14} color="var(--red-color)" />
+               <span style={{ fontSize: '0.75rem', color: 'var(--red-color)', fontWeight: '600' }}>Sync Error</span>
+            </div>
           ) : userSettings?.last_synced_at && (
             <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
               Last synced: {format(new Date(userSettings.last_synced_at), 'h:mm a')}
@@ -389,12 +403,13 @@ export default function App() {
 
               {expandedCategories[cat] && (
                 <div className="accordion-body">
-                  {grouped[cat].tasks.map(task => (
+                   {grouped[cat].tasks.map(task => (
                     <TaskCard
                       key={task.id}
                       task={task}
                       onToggleStar={toggleStar}
                       onComplete={toggleComplete}
+                      onTaskDelete={deleteTask}
                     />
                   ))}
                 </div>
@@ -407,7 +422,7 @@ export default function App() {
   );
 }
 
-function TaskCard({ task, onToggleStar, onComplete }) {
+function TaskCard({ task, onToggleStar, onComplete, onTaskDelete }) {
   const [expanded, setExpanded] = useState(false);
   const urgency = getUrgencyLevel(task.deadline);
 
@@ -436,6 +451,13 @@ function TaskCard({ task, onToggleStar, onComplete }) {
             title={task.starred ? "Unstar" : "Star to prevent fading"}
           >
             <Star fill={task.starred ? "currentColor" : "none"} size={18} />
+          </button>
+          <button
+            className="action-btn delete-btn"
+            onClick={(e) => onTaskDelete(e, task)}
+            title="Delete task"
+          >
+            <Trash2 size={18} />
           </button>
           <button
             className="action-btn complete-btn"

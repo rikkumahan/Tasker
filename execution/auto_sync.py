@@ -2,7 +2,7 @@
 auto_sync.py
 --------------------------------------------
 Serverless Cloud Engine (Designed for GitHub Actions).
-PRO FIX: Native async httpx for Gmail to avoid Segmentation Fault (Exit 139).
+PRO SCALING: Parallel multi-tenant sync with error resilience and reporting.
 """
 
 import os
@@ -33,14 +33,18 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-LLM_SEMAPHORE = asyncio.Semaphore(5)
+# ---------------------------------------------------------------------------
+# CONCURRENCY CONTROL
+# ---------------------------------------------------------------------------
+LLM_SEMAPHORE = asyncio.Semaphore(5)  # Limit parallel AI calls globally
+USER_SEMAPHORE = asyncio.Semaphore(10) # Limit parallel user syncs to 10
 
 # ---------------------------------------------------------------------------
-# Gmail Auth (Returns direct credentials object)
+# Gmail Auth
 # ---------------------------------------------------------------------------
 
 def authenticate_gmail_stateless(settings_row):
-    print("[INFO] Authenticating Gmail...")
+    print(f"[INFO] Authenticating Gmail for {settings_row.get('user_id')}...")
     token_data = settings_row.get("gmail_token")
     if not token_data:
         raise ValueError("No gmail_token found.")
@@ -68,14 +72,13 @@ def authenticate_gmail_stateless(settings_row):
                     "scopes": list(creds.scopes)
                 }
             }).eq("id", settings_row["id"]).execute()
-            print("[SUCCESS] Refreshed.")
         else:
             raise ValueError("Invalid Gmail credentials.")
 
     return creds
 
 # ---------------------------------------------------------------------------
-# Email body decoding
+# Helpers
 # ---------------------------------------------------------------------------
 
 def decode_body(payload):
@@ -91,15 +94,11 @@ def decode_body(payload):
             if body: break
     return body.strip()
 
-# ---------------------------------------------------------------------------
-# Supabase async wrapper
-# ---------------------------------------------------------------------------
-
 async def supabase_execute(query):
     return await asyncio.to_thread(lambda: query.execute())
 
 # ---------------------------------------------------------------------------
-# Native Async Gmail Fetching (Uses httpx — Thread Safe)
+# Gmail Async
 # ---------------------------------------------------------------------------
 
 async def fetch_single_email(client: httpx.AsyncClient, msg_id, access_token):
@@ -134,7 +133,6 @@ async def fetch_all_emails(client: httpx.AsyncClient, settings_row, creds):
     else:
         query = f"after:{int((datetime.now(timezone.utc) - timedelta(hours=48)).timestamp())}"
 
-    print(f"[INFO] Query: {query}")
     list_url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages?q={query}&maxResults=25"
     resp = await client.get(list_url, headers={"Authorization": f"Bearer {creds.token}"})
     if resp.status_code != 200: return []
@@ -147,7 +145,7 @@ async def fetch_all_emails(client: httpx.AsyncClient, settings_row, creds):
     return [r for r in results if r is not None]
 
 # ---------------------------------------------------------------------------
-# Persona Evolution
+# AI logic (Persona & Extraction)
 # ---------------------------------------------------------------------------
 
 async def evolve_user_persona(client: httpx.AsyncClient, emails, settings_row):
@@ -181,14 +179,9 @@ Return ONLY valid JSON: {{ "user_profile": "...", "categories": [...] }}"""
                     }).eq("id", settings_row["id"]))
                     settings_row["user_profile"] = parsed["user_profile"]
                     settings_row["categories"] = parsed["categories"]
-                    print("[SUCCESS] Persona evolved.")
         except Exception as e:
-            print(f"[WARNING] Persona evolution failed: {e}")
+            print(f"[WARNING] Persona evolution failed for {settings_row.get('user_id')}: {e}")
     return settings_row
-
-# ---------------------------------------------------------------------------
-# Task Extraction
-# ---------------------------------------------------------------------------
 
 async def extract_single_email(client: httpx.AsyncClient, email, settings_row):
     user_profile = settings_row.get("user_profile", "A typical student.")
@@ -230,80 +223,73 @@ async def extract_tasks_parallel(client: httpx.AsyncClient, emails, settings_row
     return [task for email_tasks in results for task in email_tasks]
 
 # ---------------------------------------------------------------------------
-# Deduplication & Batch Upsert
+# Sync logic & Multi-User scaling
 # ---------------------------------------------------------------------------
 
-def deduplicate_extracted_tasks(tasks):
-    seen = set()
-    unique = []
-    for t in tasks:
-        key = f"{t.get('title','').lower()}|{str(t.get('deadline',''))[:10]}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(t)
-    return unique
+async def sync_user_with_error_handling(client: httpx.AsyncClient, user_row):
+    """Wraps sync logic to catch errors and report them to the DB."""
+    async with USER_SEMAPHORE:
+        user_id = user_row.get("user_id")
+        try:
+            print(f"[INFO] Syncing user: {user_id}")
+            creds = await asyncio.to_thread(authenticate_gmail_stateless, user_row)
+            emails = await fetch_all_emails(client, user_row, creds)
+            
+            if not emails:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                await supabase_execute(supabase.table("user_settings").update({
+                    "last_synced_at": now_iso,
+                    "last_sync_error": None  # Clear previous errors
+                }).eq("id", user_row["id"]))
+                return
 
-async def upsert_tasks_batch(tasks):
-    if not tasks: return
-    user_id = tasks[0]["user_id"]
-    email_ids = list({t["source_email_id"] for t in tasks})
-    res = await supabase_execute(supabase.table("tasks").select("source_email_id, id").eq("user_id", user_id).in_("source_email_id", email_ids))
-    existing_map = {row["source_email_id"]: row["id"] for row in (res.data or [])}
+            res = await supabase_execute(supabase.table("tasks").select("source_email_id").eq("user_id", user_id))
+            processed_ids = {row["source_email_id"] for row in (res.data or [])}
+            new_emails = [e for e in emails if e["id"] not in processed_ids]
 
-    to_insert = []
-    for task in tasks:
-        eid = task["source_email_id"]
-        if eid in existing_map:
-            await supabase_execute(supabase.table("tasks").update(task).eq("id", existing_map[eid]))
-        else:
-            to_insert.append(task)
-    if to_insert:
-        await supabase_execute(supabase.table("tasks").insert(to_insert))
+            evolved_row = await evolve_user_persona(client, new_emails, user_row)
+            tasks = await extract_tasks_parallel(client, new_emails, evolved_row)
+            
+            # Batch upsert
+            if tasks:
+                email_ids = list({t["source_email_id"] for t in tasks})
+                res_tasks = await supabase_execute(supabase.table("tasks").select("source_email_id, id").eq("user_id", user_id).in_("source_email_id", email_ids))
+                existing_map = {row["source_email_id"]: row["id"] for row in (res_tasks.data or [])}
 
-# ---------------------------------------------------------------------------
-# Multi-Tenant Sync
-# ---------------------------------------------------------------------------
+                to_insert = []
+                for task in tasks:
+                    eid = task["source_email_id"]
+                    if eid in existing_map:
+                        await supabase_execute(supabase.table("tasks").update(task).eq("id", existing_map[eid]))
+                    else:
+                        to_insert.append(task)
+                if to_insert:
+                    await supabase_execute(supabase.table("tasks").insert(to_insert))
 
-async def sync_user(client: httpx.AsyncClient, user_row):
-    user_id = user_row.get("user_id")
-    print(f"\n[INFO] --- Syncing: {user_id} ---")
-    
-    # Auth
-    creds = await asyncio.to_thread(authenticate_gmail_stateless, user_row)
-    
-    # Fetch
-    emails = await fetch_all_emails(client, user_row, creds)
-    if not emails:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        await supabase_execute(supabase.table("user_settings").update({"last_synced_at": now_iso}).eq("id", user_row["id"]))
-        return
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await supabase_execute(supabase.table("user_settings").update({
+                "last_synced_at": now_iso,
+                "last_sync_error": None
+            }).eq("id", user_row["id"]))
+            print(f"[SUCCESS] {user_id} sync complete.")
 
-    res = await supabase_execute(supabase.table("tasks").select("source_email_id").eq("user_id", user_id))
-    processed_ids = {row["source_email_id"] for row in (res.data or [])}
-    new_emails = [e for e in emails if e["id"] not in processed_ids]
-    print(f"[INFO] {len(new_emails)} fresh emails.")
-
-    evolved_row = await evolve_user_persona(client, new_emails, user_row)
-    tasks = await extract_tasks_parallel(client, new_emails, evolved_row)
-    unique_tasks = deduplicate_extracted_tasks(tasks)
-    await upsert_tasks_batch(unique_tasks)
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    await supabase_execute(supabase.table("user_settings").update({"last_synced_at": now_iso}).eq("id", user_row["id"]))
-    print(f"[SUCCESS] {user_id} synced.")
+        except Exception as e:
+            err_msg = str(e)[:255]
+            print(f"[ERROR] User {user_id} failed: {err_msg}")
+            await supabase_execute(supabase.table("user_settings").update({
+                "last_sync_error": err_msg
+            }).eq("id", user_row["id"]))
 
 async def main():
-    print("--- Starting Phase 10 Pro Sync (FIXED) ---")
+    print("--- Starting Pro Scalable Sync ---")
     res = await supabase_execute(supabase.table("user_settings").select("*"))
     users = res.data or []
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for user_row in users:
-            if not user_row.get("user_id"): continue
-            try:
-                await sync_user(client, user_row)
-            except Exception as e:
-                print(f"[ERROR] Sync crashed: {e}")
-                traceback.print_exc()
+    
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        # PARALLEL SYNC ACROSS ALL USERS
+        tasks = [sync_user_with_error_handling(client, user_row) for user_row in users if user_row.get("user_id")]
+        await asyncio.gather(*tasks)
+    print("--- Done ---")
 
 if __name__ == "__main__":
     asyncio.run(main())
