@@ -159,7 +159,6 @@ export default function App() {
         const providerToken = sess?.provider_token;
         const providerRefreshToken = sess?.provider_refresh_token;
         
-        // Pass tokens to our onboard function in standard VITE API route
         const res = await fetch('/api/onboard', {
            method: 'POST',
            headers: {
@@ -169,7 +168,9 @@ export default function App() {
            body: JSON.stringify({ providerToken, providerRefreshToken })
         });
         
-        if (!res.ok) {
+        if (res.ok) {
+           await fetchTasks(sess); // Immediately fetch the initial tasks
+        } else {
            console.error("Onboarding failed", await res.text());
         }
     } catch (e) {

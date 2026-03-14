@@ -10,16 +10,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing provider token' });
   }
 
-  // Also get the auth token from headers to identify the user
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Missing auth header' });
   
   const token = authHeader.replace('Bearer ', '');
-  
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
   
-  // Create a Supabase client acting on behalf of the logged-in user
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: `Bearer ${token}` } }
   });
@@ -30,7 +27,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Check if user already has a settings profile
+    // 1. Check if user already exists
     const { data: existingSettings } = await supabase
       .from('user_settings')
       .select('id')
@@ -38,50 +35,41 @@ export default async function handler(req, res) {
       .single();
 
     if (existingSettings) {
-      // If they already have settings, just update their gmail_token silently
-      // In case they just logged back in and their token refreshed
       await supabase.from('user_settings').update({
         gmail_token: {
-           token: providerToken, // Python Credentials object expects 'token', not 'access_token'
+           token: providerToken,
            refresh_token: providerRefreshToken || null
         }
       }).eq('user_id', user.id);
-      
       return res.status(200).json({ success: true, message: 'Updated existing token' });
     }
 
-    // 2. NEW USER FULL SETUP: Fetch Emails
-    console.log(`[INFO] Fetching emails for new user ${user.id}...`);
-    const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50', {
+    // 2. Cold Start: Fetch 20 emails in PARALLEL to beat Vercel's 10s timeout
+    console.log(`[INFO] Cold Start: Parallel fetch for ${user.id}...`);
+    const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20', {
        headers: { Authorization: `Bearer ${providerToken}` }
     });
     
-    if (!gmailRes.ok) {
-        throw new Error("Failed to fetch from Gmail API");
-    }
-    const gmailData = await gmailRes.json();
+    if (!listRes.ok) throw new Error("Gmail API list failed");
+    const listData = await listRes.json();
     
-    let emailText = "";
-    if (gmailData.messages) {
-       for (const msg of gmailData.messages) {
+    let emails = [];
+    if (listData.messages) {
+       // PARALLEL FETCHING: All bodies at once
+       const messagePromises = listData.messages.map(async (msg) => {
           try {
               const fullMsgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`, {
-                 headers: { Authorization: `Bearer ${providerToken}` }
+                  headers: { Authorization: `Bearer ${providerToken}` }
               });
               const fullMsg = await fullMsgRes.json();
               
               const headers = fullMsg.payload?.headers || [];
-              const subjectHeader = headers.find(h => h.name === 'Subject');
-              const fromHeader = headers.find(h => h.name === 'From');
-              
-              const subject = subjectHeader ? subjectHeader.value : '(no subject)';
-              const sender = fromHeader ? fromHeader.value : 'unknown';
+              const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
+              const sender = headers.find(h => h.name === 'From')?.value || 'unknown';
               
               let body = "";
               const extractBody = (part) => {
                   if (part.mimeType === 'text/plain' && part.body?.data) {
-                      // Gmail uses Base64URL encoding (uses '-' and '_') which Node can struggle with natively, 
-                      // so we safely replace them with standard Base64 characters ('+' and '/')
                       const safeB64 = part.body.data.replace(/-/g, '+').replace(/_/g, '/');
                       body += Buffer.from(safeB64, 'base64').toString('utf8');
                   } else if (part.parts) {
@@ -90,96 +78,104 @@ export default async function handler(req, res) {
               };
               if (fullMsg.payload) extractBody(fullMsg.payload);
               
-              const preview = body.substring(0, 300).replace(/\n/g, " ").trim();
-              emailText += `From: ${sender}\nSubject: ${subject}\nBody: ${preview}...\n---\n`;
-          } catch (e) {
-             console.error("Failed to fetch individual message", e);
-          }
-       }
+              return {
+                  id: msg.id,
+                  subject,
+                  sender,
+                  body: body.substring(0, 500).replace(/\n/g, " ").trim()
+              };
+          } catch (e) { return null; }
+       });
+       
+       const results = await Promise.all(messagePromises);
+       emails = results.filter(e => e !== null);
     }
 
-    // 3. Call Sarvam AI for Profile Evolution
+    // 3. Unified LLM Call: Persona + Categories + Initial Tasks
+    let user_profile = "A student seeking productivity.";
+    let categories = ["academic", "admin", "opportunity", "social", "other"];
+    let initial_tasks = [];
+
     const sarvamKey = process.env.SARVAM_API_KEY;
-    // Point 1: The "pre-common" seed profile to give the AI context.
-    let user_profile = "A person in a college who wants to organize their academic and personal responsibilities efficiently.";
-    let categories = ["academic_deadline", "admin_notice", "opportunity", "campus_event", "security_warning"];
+    if (sarvamKey && emails.length > 0) {
+        const emailBlock = emails.map(e => `ID: ${e.id}\nFrom: ${e.sender}\nSub: ${e.subject}\nBody: ${e.body}...`).join("\n---\n");
+        const now = new Date().toISOString().split('.')[0]; // IST-ish for prompt
 
-    if (sarvamKey && emailText) {
-        console.log("[INFO] Sending inbox payload to Sarvam AI to evolve seed profile...");
-        const prompt = `
-You are an AI tasked with deeply understanding a user so you can build them a hyper-personalized task manager.
+        const prompt = `You are an AI on-boarding a new user. Analyze these 20 emails:
+${emailBlock}
 
-PRE-COMMON SEED PROFILE:
-"${user_profile}"
+TASK:
+1. Write a 3-sentence user_profile based on their email themes.
+2. Define exactly 5 broad categories (snake_case).
+3. Extract up to 5 MOST URGENT tasks/events found.
 
-Look at the following 50 recent emails from their inbox and EVOLVE that seed profile:
-
-Emails:
-${emailText}
-
-Based on this content, perform two tasks:
-1. Write a 3 to 4 sentence \`user_profile\` that builds upon the Seed Profile. Add highly specific details you found in their inbox (e.g., specific majors, clubs they are in, companies they are applying to, or types of regular deadlines they face).
-2. Define EXACTLY 5 broad categories that these emails can be grouped into for their dashboard.
-Categories should be single snake_case strings (e.g., technical_internship, lab_report).
-
-Return ONLY a JSON object with exactly these two keys:
+Return ONLY this JSON:
 {
-  "user_profile": "detailed evolved personality description here...",
-  "categories": ["category_1", "category_2", "category_3", "category_4", "category_5"]
-}`;
-        
+  "user_profile": "...",
+  "categories": ["cat1", "cat2", "cat3", "cat4", "cat5"],
+  "initial_tasks": [
+    {
+      "source_email_id": "...",
+      "title": "...",
+      "course": "...",
+      "deadline": "ISO8601 no Z",
+      "summary": "...",
+      "category": "Pick from your 5 generated categories"
+    }
+  ]
+}
+
+Rules:
+- Deadline past ${now}? Skip it.
+- No markdown. No text. Just JSON.`;
+
         const llmRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${sarvamKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: "sarvam-105b",
-                messages: [{ role: "user", content: prompt }]
-            })
+            headers: { 'Authorization': `Bearer ${sarvamKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: prompt }] })
         });
-        
+
         if (llmRes.ok) {
-            const llmData = await llmRes.json();
-            try {
-                const reply = llmData.choices[0].message.content;
-                const cleaned = reply.replace(/```json/g, '').replace(/```/g, '').trim();
-                const parsed = JSON.parse(cleaned);
-                if (parsed.user_profile && parsed.categories) {
-                    user_profile = parsed.user_profile;
-                    categories = parsed.categories;
+            const data = await llmRes.json();
+            const reply = data.choices[0].message.content || "";
+            
+            // PRO: Use regex to extract JSON block (safest for AI responses)
+            const jsonMatch = reply.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try {
+                    const parsed = JSON.parse(jsonMatch[0].trim());
+                    if (parsed.user_profile) user_profile = parsed.user_profile;
+                    if (parsed.categories) categories = parsed.categories;
+                    if (parsed.initial_tasks) initial_tasks = parsed.initial_tasks;
+                } catch (e) {
+                    console.error("JSON Parse fail", e, reply);
                 }
-            } catch (e) {
-                console.error("Failed to parse Sarvam JSON response", e);
             }
-        } else {
-            console.error("Sarvam AI Error", await llmRes.text());
         }
+    } else if (emails.length === 0) {
+        console.log("[INFO] Empty inbox. Using blank-slate defaults.");
+        user_profile = "A new user with an empty inbox, ready to start organizing.";
     }
 
-    // 4. Save entire payload to Supabase
-    // This completes the zero-terminal onboarding process.
-    // We intentionally DO NOT set last_synced_at here. By leaving it NULL,
-    // the auto_sync script will trigger its 48-hour fallback to hydrate their empty dashboard.
-    const { error: insertError } = await supabase.from('user_settings').insert([{
+    // 4. Atomic Save
+    const { error: settingsError } = await supabase.from('user_settings').insert([{
         user_id: user.id,
         user_profile,
         categories,
-        gmail_token: {
-           token: providerToken, // Python explicitly expects 'token'
-           refresh_token: providerRefreshToken || null
-        }
+        gmail_token: { token: providerToken, refresh_token: providerRefreshToken || null }
     }]);
 
-    if (insertError) {
-        throw insertError;
+    if (settingsError) throw settingsError;
+
+    if (initial_tasks.length > 0) {
+        const tasksToSave = initial_tasks.map(t => ({ ...t, user_id: user.id, status: 'pending' }));
+        await supabase.from('tasks').insert(tasksToSave);
     }
 
-    return res.status(200).json({ success: true, message: 'Onboarding completed!' });
+    return res.status(200).json({ success: true, message: 'Fast-Track Onboarding complete!' });
 
   } catch (error) {
-    console.error("Onboarding server error:", error);
+    console.error("Onboarding error:", error);
     return res.status(500).json({ error: error.message });
   }
 }
