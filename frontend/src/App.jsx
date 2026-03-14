@@ -265,7 +265,15 @@ export default function App() {
   const pendingTasks = tasks.filter(t => {
     if (t.status === 'completed') return false;
 
-    // 24hr auto-fade policy for non-deadlined items (except the special Check Out Mail category)
+    // 1. Hide Overdue tasks (older than today) unless they are STARRED
+    if (t.deadline) {
+       const d = parseLocalDate(t.deadline);
+       if (isPast(d) && !isToday(d) && !t.starred) {
+          return false;
+       }
+    }
+
+    // 2. 24hr auto-fade policy for non-deadlined items (except the special Check Out Mail category)
     if (!t.deadline && !t.starred && t.category !== 'Check_Out_Mail') {
       const createdDate = new Date(t.created_at || Date.now());
       const hoursOld = (Date.now() - createdDate.getTime()) / (1000 * 60 * 60);

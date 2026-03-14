@@ -196,7 +196,12 @@ async def extract_single_email(client: httpx.AsyncClient, email, settings_row):
     user_id = settings_row.get("user_id")
     now_ist = datetime.now(IST).strftime("%Y-%m-%dT%H:%M:%S")
 
-    prompt = f"""Extract tasks from email. Now: {now_ist}. Profile: {user_profile}. Categories: {categories}.
+    prompt = f"""Extract actionable tasks from email. 
+CURRENT DATE AND TIME (IST): {now_ist}
+Rule: Do NOT extract tasks whose deadline has already passed before {now_ist}.
+Profile: {user_profile}. 
+Categories: {categories}.
+
 Email: {email['subject']} - {email['body']}
 Return raw JSON array only."""
 

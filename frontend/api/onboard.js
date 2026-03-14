@@ -99,7 +99,7 @@ export default async function handler(req, res) {
     const sarvamKey = process.env.SARVAM_API_KEY;
     if (sarvamKey && emails.length > 0) {
         const emailBlock = emails.map(e => `ID: ${e.id}\nFrom: ${e.sender}\nSub: ${e.subject}\nBody: ${e.body}...`).join("\n---\n");
-        const now = new Date().toISOString().split('.')[0]; // IST-ish for prompt
+        const now = new Date().toISOString().split('.')[0]; 
 
         const prompt = `You are an AI on-boarding a new user. Analyze these 20 emails:
 ${emailBlock}
@@ -126,7 +126,7 @@ Return ONLY this JSON:
 }
 
 Rules:
-- Deadline past ${now}? Skip it.
+- Deadline already passed before ${now}? SKIP it.
 - No markdown. No text. Just JSON.`;
 
         const llmRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
