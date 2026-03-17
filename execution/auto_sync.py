@@ -196,7 +196,18 @@ Profile: {user_profile}.
 Categories: {categories}.
 
 Email: {email['subject']} - {email['body']}
-Return raw JSON array only."""
+
+Return ONLY a JSON array of objects:
+[
+  {{
+    "title": "Short descriptive title",
+    "course": "University course name if applicable, else null",
+    "deadline": "ISO8601 string (e.g. 2026-03-17T15:00:00). Guess if year is missing.",
+    "summary": "1-sentence summary of the task",
+    "category": "Pick exactly one from: {categories}"
+  }}
+]
+No markdown. No extra text."""
 
     async with LLM_SEMAPHORE:
         try:

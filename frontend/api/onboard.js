@@ -158,12 +158,12 @@ Rules:
     }
 
     // 4. Atomic Save
-    const { error: settingsError } = await supabase.from('user_settings').insert([{
+    const { error: settingsError } = await supabase.from('user_settings').upsert({
         user_id: user.id,
         user_profile,
         categories,
         gmail_token: { token: providerToken, refresh_token: providerRefreshToken || null }
-    }]);
+    }, { onConflict: 'user_id' });
 
     if (settingsError) throw settingsError;
 

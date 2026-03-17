@@ -24,3 +24,5 @@ how to make it powerful so, multiple users can interact at a time (for free).
 ////////
 
 problem : github actions is taking too much time to run the auto_sync.py file for new users. we need to fix it.
+
+![alt text](image.png)
