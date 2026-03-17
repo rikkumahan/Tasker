@@ -27,21 +27,22 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Check if user already exists
+    // 0. Register user early to prevent "Ghost Users" on timeout
+    console.log(`[INFO] Onboarding start for ${user.id}...`);
+    await supabase.from('user_settings').upsert({
+        user_id: user.id,
+        gmail_token: { token: providerToken, refresh_token: providerRefreshToken || null }
+    }, { on_conflict: 'user_id' });
+
+    // 1. Check if user already has a profile
     const { data: existingSettings } = await supabase
       .from('user_settings')
-      .select('id')
+      .select('user_profile')
       .eq('user_id', user.id)
       .single();
 
-    if (existingSettings) {
-      await supabase.from('user_settings').update({
-        gmail_token: {
-           token: providerToken,
-           refresh_token: providerRefreshToken || null
-        }
-      }).eq('user_id', user.id);
-      return res.status(200).json({ success: true, message: 'Updated existing token' });
+    if (existingSettings?.user_profile) {
+      return res.status(200).json({ success: true, message: 'Existing user' });
     }
 
     // 2. Cold Start: Fetch 20 emails in PARALLEL to beat Vercel's 10s timeout

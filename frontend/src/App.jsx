@@ -133,16 +133,22 @@ export default function App() {
     if (!error && data) setTasks(data);
 
     // Fetch user settings for synced time + trigger lock
-    const { data: settingsData } = await supabase
+    const { data: settingsData, error: settingsError } = await supabase
       .from('user_settings')
-      .select('last_synced_at, last_sync_triggered_at')
+      .select('last_synced_at, last_sync_triggered_at, user_profile')
       .eq('user_id', activeSess.user.id)
-      .single();
+      .maybeSingle();
 
     if (settingsData) {
       setUserSettings(settingsData);
+      
+      // AUTO-RECOVERY: If user exists in Auth but onboarding crashed (no profile)
+      if (!settingsData.user_profile) {
+        console.log('[INFO] User missing profile. Attempting re-onboarding recovery...');
+        handleOnboarding(activeSess);
+        return; 
+      }
 
-      // BUG FIX 4: Pass settingsData directly to triggerSync — avoids stale userSettings state
       const lastSync = settingsData.last_synced_at;
       if (lastSync) {
         const minsAgo = (Date.now() - new Date(lastSync).getTime()) / 60000;
@@ -151,6 +157,10 @@ export default function App() {
           triggerSync(activeSess, settingsData);
         }
       }
+    } else if (!settingsError) {
+      // NO SETTINGS AT ALL: Full Ghost User Recovery
+      console.log('[INFO] No settings found for user. Triggering onboarding recovery...');
+      handleOnboarding(activeSess);
     }
     setLoading(false);
   };

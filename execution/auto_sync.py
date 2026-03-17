@@ -178,6 +178,7 @@ Current Categories: {old_categories}
 Return ONLY valid JSON: {{ "user_profile": "...", "categories": [...] }}"""
 
     async with LLM_SEMAPHORE:
+        await asyncio.sleep(1.2) # Strictly enforce 60 RPM limit (AI cooldown)
         try:
             resp = await client.post(
                 "https://api.sarvam.ai/v1/chat/completions",
@@ -229,6 +230,7 @@ Return ONLY a JSON array of objects:
 No markdown. No extra text."""
 
     async with LLM_SEMAPHORE:
+        await asyncio.sleep(1.2) # Strictly enforce 60 RPM limit (AI cooldown)
         try:
             resp = await client.post(
                 "https://api.sarvam.ai/v1/chat/completions",
@@ -324,21 +326,14 @@ async def sync_user_with_error_handling(client: httpx.AsyncClient, user_row):
             evolved_row = await evolve_user_persona(client, new_emails, user_row)
             tasks = await extract_tasks_parallel(client, new_emails, evolved_row)
             
-            # Batch upsert
+            # PRO: Upsert logic handles tasks left behind by deleted users
+            # This prevents the 'duplicate key' crash on source_email_id
             if tasks:
-                email_ids = list({t["source_email_id"] for t in tasks})
-                res_tasks = await supabase_execute(supabase.table("tasks").select("source_email_id, id").eq("user_id", user_id).in_("source_email_id", email_ids))
-                existing_map = {row["source_email_id"]: row["id"] for row in (res_tasks.data or [])}
-
-                to_insert = []
-                for task in tasks:
-                    eid = task["source_email_id"]
-                    if eid in existing_map:
-                        await supabase_execute(supabase.table("tasks").update(task).eq("id", existing_map[eid]))
-                    else:
-                        to_insert.append(task)
-                if to_insert:
-                    await supabase_execute(supabase.table("tasks").insert(to_insert))
+                log_print(f"[INFO] Upserting {len(tasks)} tasks for {user_id}...")
+                await supabase_execute(
+                    supabase.table("tasks")
+                    .upsert(tasks, on_conflict="source_email_id")
+                )
 
             now_iso = datetime.now(timezone.utc).isoformat()
             await supabase_execute(supabase.table("user_settings").update({
