@@ -77,8 +77,9 @@ export default function App() {
   const [expandedCategories, setExpandedCategories] = useState({});
   const [userSettings, setUserSettings] = useState(null);
 
-  // Store session in a ref so realtime listeners always see the latest value
+  // Store session and intervals in refs so they persist across renders and are accessible in cleanup
   const sessionRef = React.useRef(null);
+  const pollRef = React.useRef(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -115,6 +116,7 @@ export default function App() {
 
     return () => {
       if (channel && supabase) supabase.removeChannel(channel);
+      if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
 
@@ -211,7 +213,8 @@ export default function App() {
     const triggeredAt = Date.now();
     const MAX_WAIT_MS = 5 * 60 * 1000; // 5 min safety cap
 
-    const poll = setInterval(async () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
       try {
         const res = await fetch('/api/sync-status');
         const { status, started_at } = await res.json();
@@ -221,7 +224,8 @@ export default function App() {
         const isOurRun = runStarted >= triggeredAt - 15000; // 15s tolerance for queuing delay
 
         if (isOurRun && status === 'completed') {
-          clearInterval(poll);
+          clearInterval(pollRef.current);
+          pollRef.current = null;
           setSyncing(false);
           fetchTasks(activeSess); // Fetch fresh tasks the moment run finishes
           console.log('[INFO] GitHub Action completed. Tasks refreshed.');
@@ -231,7 +235,8 @@ export default function App() {
 
       // Hard cap: stop after 5 minutes no matter what
       if (Date.now() - triggeredAt > MAX_WAIT_MS) {
-        clearInterval(poll);
+        clearInterval(pollRef.current);
+        pollRef.current = null;
         setSyncing(false);
         fetchTasks(activeSess);
       }

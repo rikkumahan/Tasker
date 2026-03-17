@@ -61,17 +61,21 @@ def authenticate_gmail_stateless(settings_row):
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             print("[INFO] Token expired. Refreshing...")
-            creds.refresh(Request())
-            supabase.table("user_settings").update({
-                "gmail_token": {
-                    "token": creds.token,
-                    "refresh_token": creds.refresh_token,
-                    "token_uri": creds.token_uri,
-                    "client_id": creds.client_id,
-                    "client_secret": creds.client_secret,
-                    "scopes": list(creds.scopes)
-                }
-            }).eq("id", settings_row["id"]).execute()
+            try:
+                creds.refresh(Request())
+                supabase.table("user_settings").update({
+                    "gmail_token": {
+                        "token": creds.token,
+                        "refresh_token": creds.refresh_token,
+                        "token_uri": creds.token_uri,
+                        "client_id": creds.client_id,
+                        "client_secret": creds.client_secret,
+                        "scopes": list(creds.scopes)
+                    }
+                }).eq("id", settings_row["id"]).execute()
+            except Exception as e:
+                # If update fails (e.g. another process just did it), we still have valid local creds
+                print(f"[WARNING] Token update conflict for {settings_row['id']}: {e}")
         else:
             raise ValueError("Invalid Gmail credentials.")
 
@@ -219,12 +223,23 @@ No markdown. No extra text."""
             )
             if resp.status_code == 200:
                 content = resp.json()["choices"][0]["message"]["content"]
-                extracted = json.loads(content.strip().strip("```json").strip("```").strip())
-                for t in extracted:
-                    t["source_email_id"] = email["id"]
-                    t["user_id"] = user_id
-                return extracted
-        except: return []
+                try:
+                    # PRO: Resilient JSON parsing (handles markdown blocks)
+                    clean_content = content.strip().strip("```json").strip("```").strip()
+                    extracted = json.loads(clean_content)
+                    for t in extracted:
+                        t["source_email_id"] = email["id"]
+                        t["user_id"] = user_id
+                    return extracted
+                except json.JSONDecodeError:
+                    print(f"[WARNING] AI returned invalid JSON for {email['id']}")
+                    return []
+            else:
+                print(f"[ERROR] LLM API Status {resp.status_code}")
+                return []
+        except Exception as e:
+            print(f"[WARNING] Extraction fail: {e}")
+            return []
     return []
 
 async def extract_tasks_parallel(client: httpx.AsyncClient, emails, settings_row):

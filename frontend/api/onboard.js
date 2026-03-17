@@ -139,17 +139,22 @@ Rules:
             const data = await llmRes.json();
             const reply = data.choices[0].message.content || "";
             
-            // PRO: Use regex to extract JSON block (safest for AI responses)
+            // PRO: Use robust regex to extract the outermost JSON object
             const jsonMatch = reply.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {
                     const parsed = JSON.parse(jsonMatch[0].trim());
                     if (parsed.user_profile) user_profile = parsed.user_profile;
                     if (parsed.categories) categories = parsed.categories;
-                    if (parsed.initial_tasks) initial_tasks = parsed.initial_tasks;
+                    if (parsed.initial_tasks) {
+                        // Handle potential array or object cases from chatty AI
+                        initial_tasks = Array.isArray(parsed.initial_tasks) ? parsed.initial_tasks : [];
+                    }
                 } catch (e) {
-                    console.error("JSON Parse fail", e, reply);
+                    console.error("JSON extraction failed", e, reply);
                 }
+            } else {
+                console.warn("[WARNING] AI reply had no JSON block", reply);
             }
         }
     } else if (emails.length === 0) {
