@@ -20,6 +20,12 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from supabase import create_client, Client
 
+LOG_FILE = open("debug_sync.log", "w", encoding="utf-8")
+def log_print(msg):
+    print(msg)
+    LOG_FILE.write(str(msg) + "\n")
+    LOG_FILE.flush()
+
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -36,15 +42,16 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ---------------------------------------------------------------------------
 # CONCURRENCY CONTROL
 # ---------------------------------------------------------------------------
-LLM_SEMAPHORE = asyncio.Semaphore(5)  # Limit parallel AI calls globally
-USER_SEMAPHORE = asyncio.Semaphore(10) # Limit parallel user syncs to 10
+LLM_SEMAPHORE = asyncio.Semaphore(1)  # Limit to 1 concurrent AI call to avoid 429
+USER_SEMAPHORE = asyncio.Semaphore(2) # Limit parallel user syncs to 2
 
 # ---------------------------------------------------------------------------
 # Gmail Auth
 # ---------------------------------------------------------------------------
 
 def authenticate_gmail_stateless(settings_row):
-    print(f"[INFO] Authenticating Gmail for {settings_row.get('user_id')}...")
+    user_id = settings_row.get('user_id')
+    log_print(f"[INFO] Authenticating Gmail for {user_id}...")
     token_data = settings_row.get("gmail_token")
     if not token_data:
         raise ValueError("No gmail_token found.")
@@ -58,11 +65,15 @@ def authenticate_gmail_stateless(settings_row):
         scopes=token_data.get("scopes", ["https://www.googleapis.com/auth/gmail.readonly"])
     )
 
-    if not creds.valid:
-        if creds.expired and creds.refresh_token:
-            print("[INFO] Token expired. Refreshing...")
+    log_print(f"[DEBUG] User {user_id} - Valid: {creds.valid}, Expired: {creds.expired}")
+
+    if not creds.valid or creds.expired:
+        if creds.refresh_token:
+            log_print(f"[INFO] User {user_id} token needs refresh. Attempting...")
             try:
                 creds.refresh(Request())
+                log_print(f"[SUCCESS] User {user_id} token refreshed.")
+                # Update DB with fresh token
                 supabase.table("user_settings").update({
                     "gmail_token": {
                         "token": creds.token,
@@ -74,10 +85,10 @@ def authenticate_gmail_stateless(settings_row):
                     }
                 }).eq("id", settings_row["id"]).execute()
             except Exception as e:
-                # If update fails (e.g. another process just did it), we still have valid local creds
-                print(f"[WARNING] Token update conflict for {settings_row['id']}: {e}")
+                log_print(f"[ERROR] User {user_id} refresh failed: {e}")
+                raise e
         else:
-            raise ValueError("Invalid Gmail credentials.")
+            raise ValueError(f"User {user_id} token invalid/expired and NO refresh_token available.")
 
     return creds
 
@@ -139,7 +150,8 @@ async def fetch_all_emails(client: httpx.AsyncClient, settings_row, creds):
 
     list_url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages?q={query}&maxResults=25"
     resp = await client.get(list_url, headers={"Authorization": f"Bearer {creds.token}"})
-    if resp.status_code != 200: return []
+    if resp.status_code != 200:
+        raise Exception(f"Gmail API list failed: {resp.status_code} {resp.text}")
     
     messages = resp.json().get("messages", [])
     if not messages: return []
@@ -174,7 +186,10 @@ Return ONLY valid JSON: {{ "user_profile": "...", "categories": [...] }}"""
                 timeout=60.0
             )
             if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"]
+                content = resp.json()["choices"][0]["message"].get("content")
+                if not content:
+                    log_print(f"[WARNING] AI returned empty content for persona evolution of {settings_row.get('user_id')}")
+                    return settings_row
                 parsed = json.loads(content.strip().strip("```json").strip("```").strip())
                 if "user_profile" in parsed and "categories" in parsed:
                     await supabase_execute(supabase.table("user_settings").update({
@@ -222,7 +237,10 @@ No markdown. No extra text."""
                 timeout=60.0
             )
             if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"]
+                content = resp.json()["choices"][0]["message"].get("content")
+                if not content or content.strip() == "":
+                    log_print(f"[INFO] AI found no tasks in email {email['id']}")
+                    return []
                 try:
                     # PRO: Resilient JSON parsing (handles markdown blocks)
                     clean_content = content.strip().strip("```json").strip("```").strip()
@@ -232,21 +250,29 @@ No markdown. No extra text."""
                         t["user_id"] = user_id
                     return extracted
                 except json.JSONDecodeError:
-                    print(f"[WARNING] AI returned invalid JSON for {email['id']}")
-                    return []
+                    log_print(f"[WARNING] AI returned invalid JSON for {email['id']}")
+                    raise Exception(f"AI returned invalid JSON: {content}")
             else:
-                print(f"[ERROR] LLM API Status {resp.status_code}")
-                return []
+                log_print(f"[ERROR] LLM API Status {resp.status_code}")
+                raise Exception(f"LLM API Error: {resp.status_code}")
         except Exception as e:
-            print(f"[WARNING] Extraction fail: {e}")
-            return []
+            log_print(f"[ERROR] Extraction fail for {email['id']}: {e}")
+            raise e
     return []
 
 async def extract_tasks_parallel(client: httpx.AsyncClient, emails, settings_row):
     if not emails: return []
     tasks = [extract_single_email(client, email, settings_row) for email in emails]
-    results = await asyncio.gather(*tasks)
-    return [task for email_tasks in results for task in email_tasks]
+    # PRO: return_exceptions=True so one bad email doesn't kill the whole user sync
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    final_tasks = []
+    for res in results:
+        if isinstance(res, Exception):
+            log_print(f"[WARNING] Individual extraction failed: {res}")
+        elif res:
+            final_tasks.extend(res)
+    return final_tasks
 
 # ---------------------------------------------------------------------------
 # Sync logic & Multi-User scaling
@@ -257,15 +283,37 @@ async def sync_user_with_error_handling(client: httpx.AsyncClient, user_row):
     async with USER_SEMAPHORE:
         user_id = user_row.get("user_id")
         try:
-            print(f"[INFO] Syncing user: {user_id}")
+            log_print(f"[INFO] Syncing user: {user_id}")
             creds = await asyncio.to_thread(authenticate_gmail_stateless, user_row)
-            emails = await fetch_all_emails(client, user_row, creds)
+            
+            try:
+                emails = await fetch_all_emails(client, user_row, creds)
+            except Exception as e:
+                # PRO: Resilience - If 401 hit, try ONE refresh even if library thought we were valid
+                if "401" in str(e) and creds.refresh_token:
+                    log_print(f"[WARNING] 401 Unauthorized for {user_id}. Forcing manual refresh...")
+                    await asyncio.to_thread(creds.refresh, Request())
+                    # Update DB with NEW token
+                    supabase.table("user_settings").update({
+                        "gmail_token": {
+                            "token": creds.token,
+                            "refresh_token": creds.refresh_token,
+                            "token_uri": creds.token_uri,
+                            "client_id": creds.client_id,
+                            "client_secret": creds.client_secret,
+                            "scopes": list(creds.scopes)
+                        }
+                    }).eq("id", user_row["id"]).execute()
+                    # Retry with new creds
+                    emails = await fetch_all_emails(client, user_row, creds)
+                else:
+                    raise e
             
             if not emails:
                 now_iso = datetime.now(timezone.utc).isoformat()
                 await supabase_execute(supabase.table("user_settings").update({
                     "last_synced_at": now_iso,
-                    "last_sync_error": None  # Clear previous errors
+                    "last_sync_error": None
                 }).eq("id", user_row["id"]))
                 return
 
@@ -297,25 +345,27 @@ async def sync_user_with_error_handling(client: httpx.AsyncClient, user_row):
                 "last_synced_at": now_iso,
                 "last_sync_error": None
             }).eq("id", user_row["id"]))
-            print(f"[SUCCESS] {user_id} sync complete.")
+            log_print(f"[SUCCESS] {user_id} sync complete.")
 
         except Exception as e:
             err_msg = str(e)[:255]
-            print(f"[ERROR] User {user_id} failed: {err_msg}")
+            log_print(f"[ERROR] User {user_id} failed: {err_msg}")
+            log_print(traceback.format_exc())
             await supabase_execute(supabase.table("user_settings").update({
                 "last_sync_error": err_msg
             }).eq("id", user_row["id"]))
 
 async def main():
-    print("--- Starting Pro Scalable Sync ---")
+    log_print("--- Starting Pro Scalable Sync ---")
     res = await supabase_execute(supabase.table("user_settings").select("*"))
-    users = res.data or []
+    users = [u for u in (res.data or []) if u.get("user_id")]
     
     async with httpx.AsyncClient(timeout=45.0) as client:
         # PARALLEL SYNC ACROSS ALL USERS
         tasks = [sync_user_with_error_handling(client, user_row) for user_row in users if user_row.get("user_id")]
         await asyncio.gather(*tasks)
-    print("--- Done ---")
+    log_print("--- Done ---")
+    LOG_FILE.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
