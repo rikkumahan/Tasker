@@ -258,11 +258,13 @@ export default function App() {
   const pendingTasks = tasks.filter(t => {
     if (t.status === 'completed') return false;
 
-    // 1. Hide Overdue tasks older than 24 hours, unless they are STARRED
+    // 1. Overdue Guard: Stay visible for 24hrs past deadline, then hide (unless STARRED)
     if (t.deadline) {
        const d = parseLocalDate(t.deadline);
-       const hoursOverdue = (Date.now() - d.getTime()) / (1000 * 60 * 60);
-       if (hoursOverdue > 24 && !isToday(d) && !t.starred) {
+       const now = new Date();
+       const isOverdueByMoreThan24h = (now.getTime() - d.getTime()) > (24 * 60 * 60 * 1000);
+       
+       if (isOverdueByMoreThan24h && !isToday(d) && !t.starred) {
           return false;
        }
     }
