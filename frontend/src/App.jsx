@@ -209,7 +209,7 @@ export default function App() {
     setSyncing(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke('sync_v2');
+      const { data, error } = await supabase.functions.invoke('sync_pro_final');
       
       if (error) throw error;
       
