@@ -5,15 +5,34 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// HELPER: Decode Gmail Base64
+function decodeBody(payload: any): string {
+  let body = "";
+  const mime = payload.mimeType || "";
+  if (mime === "text/plain") {
+    const data = payload.body?.data || "";
+    if (data) body = atob(data.replace(/-/g, "+").replace(/_/g, "/"));
+  } else if (payload.parts) {
+    for (const part of payload.parts) {
+      body = decodeBody(part);
+      if (body) break;
+    }
+  }
+  return body.trim();
+}
+
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 Deno.serve(async (req: Request) => {
-  // 1. Handle CORS Preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return new Response("Missing Authorization header", { status: 401, headers: corsHeaders });
+    if (!authHeader) return new Response("Missing auth", { status: 401, headers: corsHeaders });
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -21,26 +40,18 @@ Deno.serve(async (req: Request) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    // 2. Get user from JWT
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
 
-    // 3. Fetch user settings (and secrets)
-    const { data: settings, error: settingsError } = await supabase
-      .from("user_settings")
-      .select("*")
-      .eq("user_id", user.id)
-      .single();
+    const { data: settings } = await supabase.from("user_settings").select("*").eq("user_id", user.id).single();
+    if (!settings) return new Response("No settings", { status: 404, headers: corsHeaders });
 
-    if (settingsError || !settings) return new Response("User settings not found", { status: 404, headers: corsHeaders });
-
-    // SECRETS FALLBACK (for automated setup)
     const CLIENT_ID = Deno.env.get("GMAIL_CLIENT_ID") || settings.secrets?.GMAIL_CLIENT_ID;
     const CLIENT_SECRET = Deno.env.get("GMAIL_CLIENT_SECRET") || settings.secrets?.GMAIL_CLIENT_SECRET;
     const SARVAM_KEY = Deno.env.get("SARVAM_API_KEY") || settings.secrets?.SARVAM_API_KEY;
 
+    // TOKEN REFRESH (Mirrors auto_sync.py)
     async function refreshGmailToken(refreshToken: string) {
-      if (!CLIENT_ID || !CLIENT_SECRET) throw new Error("Missing Google Client ID/Secret");
       const resp = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -51,181 +62,147 @@ Deno.serve(async (req: Request) => {
           grant_type: "refresh_token",
         }),
       });
-
-      if (!resp.ok) {
-        const err = await resp.text();
-        throw new Error(`Token refresh failed: ${err}`);
-      }
-
+      if (!resp.ok) throw new Error("Token refresh fail");
       const data = await resp.json();
       return data.access_token;
     }
 
-    // 4. Authenticate & Fetch Emails
     let gmailToken = settings.gmail_token.token;
     const refreshToken = settings.gmail_token.refresh_token;
 
-    const fetchEmails = async (token: string) => {
+    // FETCH EMAILS (Mirrors auto_sync.py)
+    const fetchAllEmails = async (token: string) => {
       const lastSynced = settings.last_synced_at;
-      const afterParam = lastSynced 
-          ? Math.floor(new Date(lastSynced).getTime() / 1000) 
-          : Math.floor((Date.now() - 48 * 60 * 60 * 1000) / 1000);
-      
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=after:${afterParam}&maxResults=15`, {
+      const after = lastSynced
+        ? Math.floor(new Date(lastSynced).getTime() / 1000)
+        : Math.floor((Date.now() - 48 * 3600 * 1000) / 1000);
+
+      const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=after:${after}&maxResults=25`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      return res;
+      if (!listRes.ok) throw new Error(`Gmail API failure: ${listRes.status}`);
+      const { messages } = await listRes.json();
+      if (!messages) return [];
+
+      return await Promise.all(messages.map(async (m: any) => {
+        try {
+          const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const fullMsg = await detailRes.json();
+          const headers = fullMsg.payload.headers.reduce((acc: any, h: any) => ({ ...acc, [h.name]: h.value }), {});
+          let body = decodeBody(fullMsg.payload);
+          body = body.substring(0, 1500).replace(/\n/g, " ").trim();
+          return {
+            id: m.id,
+            subject: headers.Subject || "(no subject)",
+            sender: headers.From || "unknown",
+            date: headers.Date || "",
+            body
+          };
+        } catch (e) { return null; }
+      }));
     };
 
-    let gmailRes = await fetchEmails(gmailToken);
+    let emails = await fetchAllEmails(gmailToken);
+    if (!emails.length && refreshToken) {
+      // Logic Parity: One retry with refresh if empty (might be expired)
+      gmailToken = await refreshGmailToken(refreshToken);
+      await supabase.from("user_settings").update({ gmail_token: { ...settings.gmail_token, token: gmailToken } }).eq("id", settings.id);
+      emails = await fetchAllEmails(gmailToken);
+    }
 
-    // 5. Token Refresh Handshake
-    if (gmailRes.status === 401 && refreshToken) {
-      console.log("[INFO] Token expired, attempting refresh...");
-      try {
-        gmailToken = await refreshGmailToken(refreshToken);
-        // Save new token back to DB for next time
-        await supabase.from("user_settings").update({
-          gmail_token: { ...settings.gmail_token, token: gmailToken }
-        }).eq("id", settings.id);
-        
-        gmailRes = await fetchEmails(gmailToken);
-      } catch (e) {
-        console.error("[ERROR] Refresh failed:", e);
+    const validEmails = emails.filter(e => e !== null);
+    if (!validEmails.length) {
+      await supabase.from("user_settings").update({ last_synced_at: new Date().toISOString() }).eq("id", settings.id);
+      return new Response(JSON.stringify({ success: true, count: 0 }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    let currentProfile = settings.user_profile;
+    let currentCategories = settings.categories;
+
+    // EVOLVE PERSONA (Lines 167-204 Parity)
+    if (validEmails.length > 0) {
+      const emailBlock = validEmails.slice(0, 10).map(e => `Subject: ${e.subject}\nBody: ${e.body.substring(0, 500)}`).join("\n---\n");
+      const personaPrompt = `Update user profile (3-4 sentences) and 5 categories based on:
+${emailBlock}
+Current Profile: ${currentProfile}
+Current Categories: ${currentCategories}
+Return ONLY valid JSON: { "user_profile": "...", "categories": [...] }`;
+
+      await sleep(1200); // 1.2s Cooldown
+      const personaRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${SARVAM_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: personaPrompt }] })
+      });
+
+      if (personaRes.ok) {
+        const pData = await personaRes.json();
+        const pContent = pData.choices[0].message.content;
+        const pMatch = pContent.match(/\{[\s\S]*\}/);
+        if (pMatch) {
+          const parsed = JSON.parse(pMatch[0]);
+          currentProfile = parsed.user_profile;
+          currentCategories = parsed.categories;
+          await supabase.from("user_settings").update({ user_profile: currentProfile, categories: currentCategories }).eq("id", settings.id);
+        }
       }
     }
 
-    if (!gmailRes.ok) throw new Error(`Gmail API fail: ${await gmailRes.text()}`);
+    // EXTRACT TASKS (Lines 206-263 Parity)
+    const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+    const extractionTasks = validEmails.map(async (email) => {
+      const extractionPrompt = `Extract actionable tasks from email. 
+CURRENT DATE AND TIME (IST): ${nowIst}
+Rule: Do NOT extract tasks whose deadline has already passed before ${nowIst}.
+Profile: ${currentProfile}. 
+Categories: ${currentCategories}.
 
-    const { messages } = await gmailRes.json();
-    if (!messages || messages.length === 0) {
-      return new Response(JSON.stringify({ success: true, message: "Clean inbox!" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
+Email: ${email.subject} - ${email.body}
 
-    // 6. Build context & Extract
-    const emailDetails = await Promise.all(
-      messages.map(async (m: any) => {
-        try {
-          const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
-             headers: { Authorization: `Bearer ${gmailToken}` }
-          });
-          const fullMsg = await detailRes.json();
-          const headers = fullMsg.payload.headers;
-          const subject = (headers.find((h: any) => h.name === "Subject")?.value || "(no subject)").substring(0, 100);
-          
-          let body = "";
-          const extractBody = (part: any) => {
-            if (part.mimeType === "text/plain" && part.body?.data) {
-              const safeB64 = part.body.data.replace(/-/g, "+").replace(/_/g, "/");
-              body += atob(safeB64);
-            } else if (part.parts) {
-              part.parts.forEach(extractBody);
-            }
-          };
-          if (fullMsg.payload) extractBody(fullMsg.payload);
-          
-          return { 
-            id: m.id, 
-            subject, 
-            body: body.substring(0, 700).replace(/\n/g, " ").trim() 
-          };
-        } catch (e) {
-          console.error(`[WARNING] Failed to fetch email ${m.id}:`, e);
-          return null;
+Return ONLY a JSON array of objects:
+[
+  {
+    "title": "Short descriptive title",
+    "course": "University course name if applicable, else null",
+    "deadline": "ISO8601 string (e.g. 2026-03-17T15:00:00). Guess if year is missing.",
+    "summary": "1-sentence summary of the task",
+    "category": "Pick exactly one from: ${currentCategories}"
+  }
+]
+No markdown. No extra text.`;
+
+      await sleep(1200); // 1.2s Cooldown per email (mirrors Python loop delay)
+      try {
+        const exRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${SARVAM_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: extractionPrompt }] })
+        });
+        if (exRes.ok) {
+          const exData = await exRes.json();
+          const exMatch = exData.choices[0].message.content.match(/\[[\s\S]*\]/);
+          if (exMatch) {
+            const tasks = JSON.parse(exMatch[0]);
+            return tasks.map((t: any) => ({ ...t, user_id: user.id, source_email_id: email.id }));
+          }
         }
-      })
-    );
-
-    const validEmails = emailDetails.filter(e => e !== null);
-    if (validEmails.length === 0) {
-      return new Response(JSON.stringify({ success: true, message: "No readable emails found" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-
-    const emailBlock = validEmails.map(e => `ID: ${e.id}\nSub: ${e.subject}\nBody: ${e.body}...`).join("\n---\n");
-    
-    const extractionPrompt = `Update user_profile and categories based on these NEW emails. Then extract tasks.
-Emails:
-${emailBlock}
-
-Current Profile: ${settings.user_profile}
-Current Categories: ${settings.categories}
-
-Return ONLY this JSON:
-{
-  "user_profile": "...",
-  "categories": ["cat1", "..."],
-  "tasks": [
-    {
-      "source_email_id": "...",
-      "title": "...",
-      "deadline": "ISO8601 no Z",
-      "summary": "...",
-      "category": "Pick from updated categories"
-    }
-  ]
-}
-Rules: 
-- Skip passed deadlines.
-- If email is purely info/spam, skip it.
-- No markdown.`;
-
-    const sarvamRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${SARVAM_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: extractionPrompt }] })
+      } catch (e) { return []; }
+      return [];
     });
 
-    if (sarvamRes.ok) {
-       const sarvamData = await sarvamRes.json();
-       const content = sarvamData.choices[0].message.content;
-       const parsedMatch = content.match(/\{[\s\S]*\}/);
-       if (parsedMatch) {
-          const parsed = JSON.parse(parsedMatch[0]);
+    const extractionResults = await Promise.all(extractionTasks);
+    const finalTasks = extractionResults.flat();
 
-          // Atomic update of profile and categories
-          if (parsed.user_profile && parsed.categories) {
-            await supabase.from("user_settings").update({
-                user_profile: parsed.user_profile,
-                categories: parsed.categories
-            }).eq("id", settings.id);
-          }
-
-          if (parsed.tasks && Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-            const finalTasks = parsed.tasks.map((t: any) => ({ ...t, user_id: user.id, status: 'pending' }));
-            await supabase.from("tasks").upsert(finalTasks, { onConflict: "source_email_id" });
-            
-            // Simple warning logic: if deadline is tomorrow, add a warning
-            const tomorrow = new Date();
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            const tomorrowStr = tomorrow.toISOString().split('T')[0];
-            
-            for (const t of finalTasks) {
-               if (t.deadline && t.deadline.startsWith(tomorrowStr)) {
-                  await supabase.from("tasks").update({
-                     warnings: ["Upcoming tomorrow"]
-                  }).eq("source_email_id", t.source_email_id);
-               }
-            }
-          }
-       }
+    if (finalTasks.length > 0) {
+      await supabase.from("tasks").upsert(finalTasks, { onConflict: "source_email_id" });
     }
 
-    // Update synced timestamp
-    await supabase.from("user_settings").update({ 
-      last_synced_at: new Date().toISOString(),
-      last_sync_error: null 
-    }).eq("id", settings.id);
+    await supabase.from("user_settings").update({ last_synced_at: new Date().toISOString() }).eq("id", settings.id);
+    return new Response(JSON.stringify({ success: true, count: finalTasks.length }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    return new Response(JSON.stringify({ success: true, count: validEmails.length }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
-    });
-
-  } catch (err: any) {
-    console.error("[ERROR]", err);
-    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
   }
 });
