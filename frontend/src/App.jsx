@@ -209,7 +209,7 @@ export default function App() {
     setSyncing(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke('sync_replica_final');
+      const { data, error } = await supabase.functions.invoke('bright-handler');
       
       if (error) throw error;
       
