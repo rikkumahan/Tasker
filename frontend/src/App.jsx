@@ -258,20 +258,19 @@ export default function App() {
   const pendingTasks = tasks.filter(t => {
     if (t.status === 'completed') return false;
 
-    // 1. Overdue logic: Show if overdue by less than 7 days, or if STARRED
+    // 1. Hide Overdue tasks (older than today) unless they are STARRED
     if (t.deadline) {
        const d = parseLocalDate(t.deadline);
-       const daysOverdue = (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24);
-       if (daysOverdue > 7 && !isToday(d) && !t.starred) {
+       if (isPast(d) && !isToday(d) && !t.starred) {
           return false;
        }
     }
 
-    // 2. Auto-fade policy: Fades after 3 days instead of 24h
+    // 2. 24hr auto-fade policy for non-deadlined items (except the special Check Out Mail category)
     if (!t.deadline && !t.starred && t.category !== 'Check_Out_Mail') {
       const createdDate = new Date(t.created_at || Date.now());
       const hoursOld = (Date.now() - createdDate.getTime()) / (1000 * 60 * 60);
-      if (hoursOld > 72) return false;
+      if (hoursOld > 24) return false;
     }
     return true;
   });
