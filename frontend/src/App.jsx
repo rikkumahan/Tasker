@@ -258,19 +258,20 @@ export default function App() {
   const pendingTasks = tasks.filter(t => {
     if (t.status === 'completed') return false;
 
-    // 1. Hide Overdue tasks (older than today) unless they are STARRED
+    // 1. Overdue logic: Show if overdue by less than 7 days, or if STARRED
     if (t.deadline) {
        const d = parseLocalDate(t.deadline);
-       if (isPast(d) && !isToday(d) && !t.starred) {
+       const daysOverdue = (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24);
+       if (daysOverdue > 7 && !isToday(d) && !t.starred) {
           return false;
        }
     }
 
-    // 2. 24hr auto-fade policy for non-deadlined items (except the special Check Out Mail category)
+    // 2. Auto-fade policy: Fades after 3 days instead of 24h
     if (!t.deadline && !t.starred && t.category !== 'Check_Out_Mail') {
       const createdDate = new Date(t.created_at || Date.now());
       const hoursOld = (Date.now() - createdDate.getTime()) / (1000 * 60 * 60);
-      if (hoursOld > 24) return false;
+      if (hoursOld > 72) return false;
     }
     return true;
   });
@@ -319,7 +320,14 @@ export default function App() {
       <header className="app-header">
         <div className="header-info">
           <h1>My Tasks</h1>
-          <p>{format(new Date(), 'EEEE, MMMM do')}</p>
+          <p className="date-display">{format(new Date(), 'EEEE, MMMM do')}</p>
+          {userSettings?.user_profile && (
+            <p className="profile-subheadline" title={userSettings.user_profile}>
+              {userSettings.user_profile.length > 100 
+                ? `${userSettings.user_profile.substring(0, 100)}...` 
+                : userSettings.user_profile}
+            </p>
+          )}
         </div>
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
           {syncing ? (
