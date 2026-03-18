@@ -1,9 +1,19 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 Deno.serve(async (req: Request) => {
+  // 1. Handle CORS Preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return new Response("Missing Authorization header", { status: 401 });
+    if (!authHeader) return new Response("Missing Authorization header", { status: 401, headers: corsHeaders });
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -11,18 +21,18 @@ Deno.serve(async (req: Request) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    // 1. Get user from JWT
+    // 2. Get user from JWT
     const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) return new Response("Unauthorized", { status: 401 });
+    if (authError || !user) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
 
-    // 2. Fetch user settings (and secrets)
+    // 3. Fetch user settings (and secrets)
     const { data: settings, error: settingsError } = await supabase
       .from("user_settings")
       .select("*")
       .eq("user_id", user.id)
       .single();
 
-    if (settingsError || !settings) return new Response("User settings not found", { status: 404 });
+    if (settingsError || !settings) return new Response("User settings not found", { status: 404, headers: corsHeaders });
 
     // SECRETS FALLBACK (for automated setup)
     const CLIENT_ID = Deno.env.get("GMAIL_CLIENT_ID") || settings.secrets?.GMAIL_CLIENT_ID;
@@ -51,7 +61,7 @@ Deno.serve(async (req: Request) => {
       return data.access_token;
     }
 
-    // 3. Authenticate & Fetch Emails
+    // 4. Authenticate & Fetch Emails
     let gmailToken = settings.gmail_token.token;
     const refreshToken = settings.gmail_token.refresh_token;
 
@@ -69,7 +79,7 @@ Deno.serve(async (req: Request) => {
 
     let gmailRes = await fetchEmails(gmailToken);
 
-    // 4. Token Refresh Handshake
+    // 5. Token Refresh Handshake
     if (gmailRes.status === 401 && refreshToken) {
       console.log("[INFO] Token expired, attempting refresh...");
       try {
@@ -90,11 +100,11 @@ Deno.serve(async (req: Request) => {
     const { messages } = await gmailRes.json();
     if (!messages || messages.length === 0) {
       return new Response(JSON.stringify({ success: true, message: "Clean inbox!" }), {
-        headers: { "Content-Type": "application/json" }
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
-    // 5. Build context & Extract
+    // 6. Build context & Extract
     const emailDetails = await Promise.all(
       messages.map(async (m: any) => {
         try {
@@ -131,7 +141,7 @@ Deno.serve(async (req: Request) => {
     const validEmails = emailDetails.filter(e => e !== null);
     if (validEmails.length === 0) {
       return new Response(JSON.stringify({ success: true, message: "No readable emails found" }), {
-        headers: { "Content-Type": "application/json" }
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
@@ -211,11 +221,11 @@ Rules:
     }).eq("id", settings.id);
 
     return new Response(JSON.stringify({ success: true, count: validEmails.length }), {
-      headers: { "Content-Type": "application/json" }
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
 
   } catch (err: any) {
     console.error("[ERROR]", err);
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
   }
 });
