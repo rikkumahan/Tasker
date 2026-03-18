@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     await supabase.from('user_settings').upsert({
         user_id: user.id,
         gmail_token: { token: providerToken, refresh_token: providerRefreshToken || null }
-    }, { on_conflict: 'user_id' });
+    }, { onConflict: 'user_id' });
 
     // 1. Check if user already has a profile
     const { data: existingSettings } = await supabase
@@ -168,6 +168,8 @@ Rules:
         user_id: user.id,
         user_profile,
         categories,
+        last_synced_at: new Date().toISOString(),
+        last_sync_error: null,
         gmail_token: { token: providerToken, refresh_token: providerRefreshToken || null }
     }, { onConflict: 'user_id' });
 
@@ -175,7 +177,9 @@ Rules:
 
     if (initial_tasks.length > 0) {
         const tasksToSave = initial_tasks.map(t => ({ ...t, user_id: user.id, status: 'pending' }));
-        await supabase.from('tasks').insert(tasksToSave);
+        // PRO: Use upsert to avoid duplicate key errors if the user was deleted/re-onboarded
+        const { error: taskError } = await supabase.from('tasks').upsert(tasksToSave, { onConflict: 'source_email_id' });
+        if (taskError) console.error("Initial task save error:", taskError);
     }
 
     return res.status(200).json({ success: true, message: 'Fast-Track Onboarding complete!' });

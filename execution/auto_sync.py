@@ -239,27 +239,27 @@ No markdown. No extra text."""
                 timeout=60.0
             )
             if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"].get("content")
-                if not content or content.strip() == "":
+                raw_content = resp.json()["choices"][0]["message"].get("content")
+                if not raw_content or not isinstance(raw_content, str) or raw_content.strip() == "":
                     log_print(f"[INFO] AI found no tasks in email {email['id']}")
                     return []
                 try:
                     # PRO: Resilient JSON parsing (handles markdown blocks)
-                    clean_content = content.strip().strip("```json").strip("```").strip()
+                    clean_content = raw_content.strip().strip("```json").strip("```").strip()
                     extracted = json.loads(clean_content)
                     for t in extracted:
                         t["source_email_id"] = email["id"]
                         t["user_id"] = user_id
                     return extracted
                 except json.JSONDecodeError:
-                    log_print(f"[WARNING] AI returned invalid JSON for {email['id']}")
-                    raise Exception(f"AI returned invalid JSON: {content}")
+                    log_print(f"[WARNING] AI returned invalid JSON for email {email['id']}. Content: {raw_content[:200]}...")
+                    return []
             else:
-                log_print(f"[ERROR] LLM API Status {resp.status_code}")
-                raise Exception(f"LLM API Error: {resp.status_code}")
+                log_print(f"[ERROR] LLM API Status {resp.status_code} for email {email['id']}")
+                return []
         except Exception as e:
-            log_print(f"[ERROR] Extraction fail for {email['id']}: {e}")
-            raise e
+            log_print(f"[ERROR] Extraction fail for email {email['id']}: {e}")
+            return []
     return []
 
 async def extract_tasks_parallel(client: httpx.AsyncClient, emails, settings_row):
