@@ -264,7 +264,10 @@ export default function App() {
        const now = new Date();
        const isOverdueByMoreThan24h = (now.getTime() - d.getTime()) > (24 * 60 * 60 * 1000);
        
-       if (isOverdueByMoreThan24h && !isToday(d) && !t.starred) {
+       // Don't hide if it's Starred OR in a protected category
+       const isProtected = t.starred || t.category === 'Onboarding' || t.category === 'System Status';
+
+       if (isOverdueByMoreThan24h && !isToday(d) && !isProtected) {
           return false;
        }
     }
