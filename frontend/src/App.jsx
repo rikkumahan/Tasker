@@ -129,6 +129,7 @@ export default function App() {
       .from('tasks')
       .select('*')
       .eq('user_id', activeSess.user.id)
+      .eq('status', 'pending')
       .order('deadline', { ascending: true, nullsFirst: false });
     if (!error && data) setTasks(data);
 
@@ -171,19 +172,14 @@ export default function App() {
         const providerToken = sess?.provider_token;
         const providerRefreshToken = sess?.provider_refresh_token;
         
-        const res = await fetch('/api/onboard', {
-           method: 'POST',
-           headers: {
-               'Content-Type': 'application/json',
-               'Authorization': `Bearer ${sess.access_token}`
-           },
-           body: JSON.stringify({ providerToken, providerRefreshToken })
+        const { data, error } = await supabase.functions.invoke('onboard', {
+          body: { providerToken, providerRefreshToken }
         });
         
-        if (res.ok) {
+        if (!error) {
            await fetchTasks(sess); // Immediately fetch the initial tasks
         } else {
-           console.error("Onboarding failed", await res.text());
+           console.error("Onboarding failed", error);
         }
     } catch (e) {
         console.error("Onboarding error", e);
@@ -207,14 +203,49 @@ export default function App() {
     }
 
     setSyncing(true);
+    let keepSyncing = true;
+    let baseRetrySleep = 5000;
 
     try {
-      const { data, error } = await supabase.functions.invoke('sync_pro_fixed');
-      
-      if (error) throw error;
-      
-      console.log('[INFO] Edge Sync complete:', data);
-      await fetchTasks(activeSess); // Refresh tasks immediately
+      while (keepSyncing) {
+        // We now call the new edge function 'sync', previously 'sync_pro_fixed'
+        const { data, error } = await supabase.functions.invoke('sync');
+        
+        if (error) {
+          // If we hit Sarvam's rate limit, the edge function forwards a 429
+          if (error.status === 429 || (error.message && error.message.includes('429'))) {
+             // JITTERED EXPONENTIAL BACKOFF: 
+             // Stop the Thundering Herd by adding random offset
+             const jitter = Math.random() * 3000;
+             const sleepTime = baseRetrySleep + jitter;
+             console.warn(`[WARNING] 429 Rate Limit. Sleeping for ${Math.round(sleepTime)}ms before retry...`);
+             
+             await new Promise(res => setTimeout(res, sleepTime));
+             
+             // Multiply base for next failure (max out at 30 seconds)
+             baseRetrySleep = Math.min(baseRetrySleep * 1.5, 30000);
+             continue; // Loop again with the same chunk queue
+          } else {
+             throw error; // Not a 429, fatal error
+          }
+        }
+
+        console.log(`[INFO] Chunk complete. Processed: ${data?.processed_ids?.length || 0}. Remaining: ${data?.remaining || 0}`);
+        
+        // Progressive UI Updating! 
+        // We fetch tasks immediately after every chunk so the user sees them load in sequentially
+        await fetchTasks(activeSess); 
+        
+        // Reset retry sleep if successful
+        baseRetrySleep = 5000;
+
+        if (!data || data.remaining <= 0) {
+           keepSyncing = false;
+        } else {
+           // Tiny breather between successful chunk calls
+           await new Promise(res => setTimeout(res, 500));
+        }
+      }
     } catch (e) {
       console.error('Sync trigger error:', e);
     } finally {
@@ -228,14 +259,22 @@ export default function App() {
     e.stopPropagation();
     // Optimistic update
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, starred: !t.starred } : t));
-    await supabase.from('tasks').update({ starred: !task.starred }).eq('id', task.id);
+    const { error } = await supabase.from('tasks').update({ starred: !task.starred }).eq('id', task.id);
+    if (error) {
+       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, starred: task.starred } : t)); // Revert!
+       console.error("Network error, sync failed.", error);
+    }
   };
 
   const toggleComplete = async (e, task) => {
     e.stopPropagation();
     // Optimistic update
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'completed' } : t));
-    await supabase.from('tasks').update({ status: 'completed' }).eq('id', task.id);
+    const { error } = await supabase.from('tasks').update({ status: 'completed' }).eq('id', task.id);
+    if (error) {
+       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t)); // Revert!
+       console.error("Network error, sync failed.", error);
+    }
   };
 
   const toggleCategory = (category) => {
@@ -251,7 +290,11 @@ export default function App() {
     
     // Optimistic delete
     setTasks(prev => prev.filter(t => t.id !== task.id));
-    await supabase.from('tasks').delete().eq('id', task.id);
+    const { error } = await supabase.from('tasks').delete().eq('id', task.id);
+    if (error) {
+       setTasks(prev => [...prev, task]); // Revert!
+       console.error("Network error, sync failed.", error);
+    }
   };
 
   // Filter & Group tasks

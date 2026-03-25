@@ -31,6 +31,7 @@ export default async function handler(req, res) {
     console.log(`[INFO] Onboarding start for ${user.id}...`);
     await supabase.from('user_settings').upsert({
         user_id: user.id,
+        gmail_email: user.email,  // enables webhook_ingest to look up user by email
         gmail_token: { token: providerToken, refresh_token: providerRefreshToken || null }
     }, { onConflict: 'user_id' });
 
@@ -166,6 +167,7 @@ Rules:
     // 4. Atomic Save
     const { error: settingsError } = await supabase.from('user_settings').upsert({
         user_id: user.id,
+        gmail_email: user.email,  // persist canonical email for webhook routing
         user_profile,
         categories,
         last_synced_at: new Date().toISOString(),
@@ -174,6 +176,33 @@ Rules:
     }, { onConflict: 'user_id' });
 
     if (settingsError) throw settingsError;
+
+    // 5. Register Gmail Push Watch (auto-renews Pub/Sub subscription for this user)
+    // This is what makes webhook_ingest receive real-time notifications.
+    // Google Watch tokens expire after 7 days — re-running onboard refreshes them.
+    try {
+      const watchRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/watch', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${providerToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          labelIds: ['INBOX'],
+          topicName: `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/tasker-gmail-push`,
+        }),
+      });
+      if (!watchRes.ok) {
+        const err = await watchRes.json();
+        console.warn('[WARN] Gmail watch registration failed:', err);
+      } else {
+        const watchData = await watchRes.json();
+        console.log(`[INFO] Gmail watch registered. Expires: ${new Date(parseInt(watchData.expiration)).toISOString()}`);
+      }
+    } catch (e) {
+      // Non-fatal: webhook path won't work but normal sync still will
+      console.warn('[WARN] Gmail watch error:', e.message);
+    }
 
     if (initial_tasks.length > 0) {
         const tasksToSave = initial_tasks.map(t => ({ ...t, user_id: user.id, status: 'pending' }));
