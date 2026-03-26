@@ -206,12 +206,27 @@ Rules:
 
     if (initial_tasks.length > 0) {
         const tasksToSave = initial_tasks.map(t => ({ ...t, user_id: user.id, status: 'pending' }));
-        // PRO: Use upsert to avoid duplicate key errors if the user was deleted/re-onboarded
         const { error: taskError } = await supabase.from('tasks').upsert(tasksToSave, { onConflict: 'source_email_id' });
         if (taskError) console.error("Initial task save error:", taskError);
     }
 
+    // 6. Catchup Prime — enqueue a background job to drain remaining inbox history
+    // The fast-track only scanned 20 emails. This lets the background_worker
+    // silently scan the rest (100s of emails) at 180 RPM without blocking the user.
+    try {
+      const catchupDedupId = `${user.id}_onboard_catchup_${Date.now()}`;
+      await supabase.from('sync_queue').insert({
+        user_id: user.id,
+        dedup_id: catchupDedupId
+      });
+      console.log('[INFO] Catchup Prime enqueued for background processing.');
+    } catch (e) {
+      // Non-fatal: onboard still succeeds even if queue insert fails
+      console.warn('[WARN] Catchup prime failed:', e.message);
+    }
+
     return res.status(200).json({ success: true, message: 'Fast-Track Onboarding complete!' });
+
 
   } catch (error) {
     console.error("Onboarding error:", error);

@@ -1,88 +1,114 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 /**
- * background_worker/index.ts
+ * background_worker/index.ts — v2 (Greedy Native Queue Drain)
  *
- * LAYER 3: The Background Worker (QStash Consumer)
+ * LAYER 3: The Background Worker
+ * Triggered reactively by webhook_ingest (or the 10-min fail-safe cron).
+ * Drains the sync_queue in a Greedy Loop until empty, then exits.
  *
- * Called by Upstash QStash at a controlled rate.
- * This is NOT user-facing — it runs entirely in the background.
- *
- * For QStash to call this, it must be a public endpoint.
- * We verify the call using the QStash signature header.
+ * - Processes one user-batch per iteration (respects 180 RPM via 333ms sleep)
+ * - Uses claim_next_job() for concurrency-safe multi-worker safety
+ * - Re-queues catchup syncs if sync reports remaining emails
+ * - Exponential backoff on failure (10s, 20s, 40s → fail after 3 strikes)
  */
 
+const MAX_RUN_MS = 120_000; // 2 min safety limit (Supabase free tier: 150s)
+const PACE_MS = 333;        // 180 RPM = 1 request per 333ms
+
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 Deno.serve(async (req: Request) => {
-  // ── QStash Signature Verification (Security Critical) ──
-  // In production, verify: https://upstash.com/docs/qstash/features/security
-  const qstashSig = req.headers.get("Upstash-Signature");
-  const qstashToken = Deno.env.get("QSTASH_TOKEN");
-  
-  // Allow direct service-role calls for pg_cron fallback
+  // Security: allow only service-role calls (from webhook_ingest or pg_cron)
   const authHeader = req.headers.get("Authorization");
   const isServiceCall = authHeader?.replace("Bearer ", "") === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!qstashSig && !isServiceCall) {
+  if (!isServiceCall) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
   }
 
-  try {
-    const payload = await req.json().catch(() => ({}));
-    const { user_id } = payload;
-    
-    if (!user_id) {
-      return new Response(JSON.stringify({ error: "Missing user_id" }), { status: 400 });
-    }
+  const supabaseAdmin = createClient(
+    Deno.env.get("SUPABASE_URL") ?? "",
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+  );
 
-    const supabaseAdmin = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
-    );
+  // ── Fail-safe: reset any jobs stuck in 'processing' >5 mins ──
+  await supabaseAdmin.rpc("reset_stuck_queue_jobs");
 
-    // Delegate to the main sync function with service-role credentials
-    // This reuses all intelligence logic (update detection, categories, batching)
-    const { data, error } = await supabaseAdmin.functions.invoke("sync", {
-      body: { user_id }
-    });
+  const startTime = Date.now();
+  let processed = 0;
 
-    if (error) {
+  // ── THE GREEDY DRAIN LOOP ──
+  while (Date.now() - startTime < MAX_RUN_MS) {
+    // Atomically claim the next pending job
+    const { data: jobs } = await supabaseAdmin.rpc("claim_next_job");
+    const job = jobs?.[0];
+
+    if (!job) break; // Queue is empty — exit cleanly (Zero Waste)
+
+    try {
+      // Delegate to sync function (all intelligence stays there)
+      const { data, error } = await supabaseAdmin.functions.invoke("sync", {
+        body: { user_id: job.user_id }
+      });
+
+      if (error) throw new Error(error.message);
+
+      // Success: mark job done
+      await supabaseAdmin.from("sync_queue")
+        .update({ status: "done" })
+        .eq("id", job.id);
+
       await supabaseAdmin.from("debug_logs").insert({
-        user_id,
-        event: "BACKGROUND_WORKER_ERR",
-        data: { error: error.message }
+        user_id: job.user_id,
+        event: "WORKER_DONE",
+        data: { tasks_extracted: data?.tasks_extracted, remaining: data?.remaining }
       });
-      // Return 500 so QStash retries this job
-      return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+
+      // Catchup Prime: if sync reports more emails to process, re-enqueue
+      // This drains a new user's historical inbox without blocking other users
+      if (data?.remaining > 0) {
+        const catchupDedupId = `${job.user_id}_catchup_${Date.now()}`;
+        await supabaseAdmin.from("sync_queue")
+          .insert({ user_id: job.user_id, dedup_id: catchupDedupId })
+          .select(); // suppress error if dedup collision
+      }
+
+      processed++;
+
+    } catch (err: any) {
+      const retries = (job.retry_count ?? 0) + 1;
+      const backoffSecs = Math.min(Math.pow(2, retries) * 10, 3600); // max 1hr
+
+      if (retries >= 3) {
+        // Dead Letter: log and abandon after 3 strikes
+        await supabaseAdmin.from("sync_queue").update({
+          status: "failed",
+          error_message: err.message
+        }).eq("id", job.id);
+
+        await supabaseAdmin.from("debug_logs").insert({
+          user_id: job.user_id,
+          event: "WORKER_FAILED",
+          data: { error: err.message, retries }
+        });
+      } else {
+        // Exponential backoff: retry after 10s, 20s, 40s
+        await supabaseAdmin.from("sync_queue").update({
+          status: "pending",
+          retry_count: retries,
+          next_retry_at: new Date(Date.now() + backoffSecs * 1000).toISOString(),
+          error_message: err.message
+        }).eq("id", job.id);
+      }
     }
 
-    await supabaseAdmin.from("debug_logs").insert({
-      user_id,
-      event: "BACKGROUND_WORKER_DONE",
-      data: { tasks_extracted: data?.tasks_extracted, remaining: data?.remaining }
-    });
-
-    // If there are remaining emails, re-queue immediately for the next batch
-    if (data?.remaining > 0 && qstashToken) {
-      const workerUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/background_worker`;
-      await fetch(`https://qstash.upstash.io/v2/publish/${encodeURIComponent(workerUrl)}`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${qstashToken}`,
-          "Content-Type": "application/json",
-          "Upstash-Delay": "5s", // 5s gap between batches → respects rate limit
-        },
-        body: JSON.stringify({ user_id })
-      });
-    }
-
-    // Return 200 so QStash marks message as delivered
-    return new Response(JSON.stringify({ success: true, ...data }), {
-      headers: { "Content-Type": "application/json" }
-    });
-
-  } catch (err: any) {
-    console.error("background_worker error:", err.message);
-    // Return 500 → QStash will retry with exponential backoff
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    // Pace to 180 RPM (3 keys × 60 RPM = 1 call per 333ms)
+    await sleep(PACE_MS);
   }
+
+  return new Response(JSON.stringify({ success: true, processed }), {
+    headers: { "Content-Type": "application/json" }
+  });
 });

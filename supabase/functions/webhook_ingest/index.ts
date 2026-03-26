@@ -1,36 +1,33 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 /**
- * webhook_ingest/index.ts
- * 
+ * webhook_ingest/index.ts — v2 (Native Queue)
+ *
  * LAYER 1: Ingestion
  * Receives Gmail Pub/Sub push notifications.
- * Fetches the email, and publishes a lightweight job to Upstash QStash.
- * Acknowledges Google in <200ms so no retries are triggered.
+ * Inserts a job into the native sync_queue table (replaces QStash).
+ * Then reactively fires background_worker (fire-and-forget).
+ * Always acknowledges Google in <200ms.
  */
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", {
+      headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" }
+    });
+  }
 
   try {
     // Google Pub/Sub sends a POST with a base64-encoded message
     const body = await req.json();
     const messageData = body?.message?.data;
-    if (!messageData) {
-      // Not a valid Pub/Sub message — acknowledge and ignore
-      return new Response("ok", { status: 200 });
-    }
+    if (!messageData) return new Response("ok", { status: 200 });
 
-    // Decode the Pub/Sub message
+    // Decode Pub/Sub payload
     const decoded = atob(messageData.replace(/-/g, "+").replace(/_/g, "/"));
     const notification = JSON.parse(decoded);
-    
-    // Gmail Pub/Sub sends: { emailAddress: "user@gmail.com", historyId: "12345" }
+
+    // Gmail sends: { emailAddress: "user@gmail.com", historyId: "12345" }
     const { emailAddress, historyId } = notification;
     if (!emailAddress) return new Response("ok", { status: 200 });
 
@@ -39,56 +36,47 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
-    // Look up which user this email belongs to
+    // Look up user by their stored gmail_email
     const { data: userSettings } = await supabaseAdmin
       .from("user_settings")
-      .select("user_id, gmail_token")
+      .select("user_id")
       .eq("gmail_email", emailAddress)
       .single();
 
-    if (!userSettings) {
-      // Unknown user — acknowledge and ignore safely
-      return new Response("ok", { status: 200 });
-    }
+    if (!userSettings) return new Response("ok", { status: 200 });
 
-    // ── LAYER 2: Publish to QStash (Rate Flattener) ──
-    const qstashToken = Deno.env.get("QSTASH_TOKEN");
-    const workerUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/background_worker`;
+    // ── LAYER 2: Insert into native sync_queue (replaces QStash publish) ──
+    //
+    // dedup_id = user_id + historyId → same webhook won't be queued twice
+    const dedupId = `${userSettings.user_id}_${historyId}`;
+    const { error: queueError } = await supabaseAdmin
+      .from("sync_queue")
+      .insert({ user_id: userSettings.user_id, dedup_id: dedupId });
 
-    if (!qstashToken) {
-      // QStash not configured — fall back to direct sync call
-      await supabaseAdmin.functions.invoke("sync", {
-        body: { user_id: userSettings.user_id }
+    if (queueError) {
+      // Unique constraint violation = already queued → safe to ignore
+      if (!queueError.message.includes("unique") && !queueError.message.includes("duplicate")) {
+        console.error("Queue insert error:", queueError.message);
+      }
+    } else {
+      // ── REACTIVE TRIGGER: Wake background_worker immediately ──
+      // Fire-and-forget: we do NOT await this — Google's 10s deadline must be met
+      supabaseAdmin.functions.invoke("background_worker", { body: {} })
+        .catch((e: any) => console.warn("Worker trigger failed:", e.message));
+
+      await supabaseAdmin.from("debug_logs").insert({
+        user_id: userSettings.user_id,
+        event: "WEBHOOK_QUEUED",
+        data: { historyId, emailAddress, dedupId }
       });
-      return new Response("ok", { status: 200 });
     }
 
-    // Publish job to QStash — QStash will call background_worker at a controlled rate
-    await fetch(`https://qstash.upstash.io/v2/publish/${encodeURIComponent(workerUrl)}`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${qstashToken}`,
-        "Content-Type": "application/json",
-        // Deduplication: Same historyId from same user won't be queued twice
-        "Upstash-Deduplication-Id": `${userSettings.user_id}_${historyId}`,
-        // Delay 2s to allow Gmail to index the new email
-        "Upstash-Delay": "2s",
-      },
-      body: JSON.stringify({ user_id: userSettings.user_id })
-    });
-
-    await supabaseAdmin.from("debug_logs").insert({
-      user_id: userSettings.user_id,
-      event: "WEBHOOK_QUEUED",
-      data: { historyId, emailAddress }
-    });
-
-    // Critical: Acknowledge Google immediately so it doesn't retry
+    // Critical: Always return 200 so Google doesn't retry
     return new Response("ok", { status: 200 });
 
   } catch (err: any) {
     console.error("webhook_ingest error:", err.message);
-    // Still return 200 to prevent Google from hammering us with retries
+    // Still 200 — never let Google know we failed
     return new Response("ok", { status: 200 });
   }
 });
