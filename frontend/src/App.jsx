@@ -169,18 +169,14 @@ export default function App() {
   const handleOnboarding = async (sess) => {
     setLoading(true);
     try {
+        console.log('[INFO] Bootstrapping new user via Unified Sync pipeline...');
         const providerToken = sess?.provider_token;
         const providerRefreshToken = sess?.provider_refresh_token;
         
-        const { data, error } = await supabase.functions.invoke('onboard', {
-          body: { providerToken, providerRefreshToken }
-        });
+        // Connect directly to the progressive chunk loader instead of a separate onboard function
+        await triggerSync(sess, null, { providerToken, providerRefreshToken });
         
-        if (!error) {
-           await fetchTasks(sess); // Immediately fetch the initial tasks
-        } else {
-           console.error("Onboarding failed", error);
-        }
+        await fetchTasks(sess);
     } catch (e) {
         console.error("Onboarding error", e);
     }
@@ -188,7 +184,7 @@ export default function App() {
   };
 
   // Core sync trigger — shared by button AND auto-stale check
-  const triggerSync = async (sess, freshSettings) => {
+  const triggerSync = async (sess, freshSettings, bootstrapTokens = null) => {
     const activeSess = sess || sessionRef.current;
     if (!activeSess) return;
 
@@ -208,8 +204,9 @@ export default function App() {
 
     try {
       while (keepSyncing) {
-        // We now call the new edge function 'sync', previously 'sync_pro_fixed'
-        const { data, error } = await supabase.functions.invoke('sync');
+        // We now call the unified edge function 'sync'
+        const payload = bootstrapTokens ? { body: bootstrapTokens } : {};
+        const { data, error } = await supabase.functions.invoke('sync', payload);
         
         if (error) {
           // If we hit Sarvam's rate limit, the edge function forwards a 429
@@ -255,6 +252,21 @@ export default function App() {
 
   const handleManualSync = () => triggerSync();
 
+  const logAction = async (actionText) => {
+    const activeSess = sessionRef.current;
+    if (!activeSess || !supabase) return;
+    try {
+      const { data } = await supabase
+        .from('user_settings')
+        .select('recent_actions')
+        .eq('user_id', activeSess.user.id)
+        .single();
+      const actions = data?.recent_actions || [];
+      const newActions = [actionText, ...actions].slice(0, 15); // keep last 15
+      await supabase.from('user_settings').update({ recent_actions: newActions }).eq('user_id', activeSess.user.id);
+    } catch (e) { console.error("Telemetry error", e); }
+  };
+
   const toggleStar = async (e, task) => {
     e.stopPropagation();
     // Optimistic update
@@ -263,6 +275,8 @@ export default function App() {
     if (error) {
        setTasks(prev => prev.map(t => t.id === task.id ? { ...t, starred: task.starred } : t)); // Revert!
        console.error("Network error, sync failed.", error);
+    } else {
+       if (!task.starred) logAction(`Starred task: "${task.title}" (Category: ${task.category})`);
     }
   };
 
@@ -274,6 +288,8 @@ export default function App() {
     if (error) {
        setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t)); // Revert!
        console.error("Network error, sync failed.", error);
+    } else {
+       logAction(`Completed task: "${task.title}" (Category: ${task.category})`);
     }
   };
 
@@ -294,6 +310,8 @@ export default function App() {
     if (error) {
        setTasks(prev => [...prev, task]); // Revert!
        console.error("Network error, sync failed.", error);
+    } else {
+       logAction(`Deleted task: "${task.title}" (Category: ${task.category})`);
     }
   };
 

@@ -14,7 +14,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
  */
 
 const MAX_RUN_MS = 120_000; // 2 min safety limit (Supabase free tier: 150s)
-const PACE_MS = 333;        // 180 RPM = 1 request per 333ms
+const PACE_MS = 200;        // 300 RPM = 1 request per 200ms (5 keys)
 
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
