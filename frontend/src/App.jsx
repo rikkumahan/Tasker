@@ -160,6 +160,14 @@ export default function App() {
       }
     } else if (!settingsError) {
       // NO SETTINGS AT ALL: Full Ghost User Recovery
+      if (!activeSess.provider_token) {
+        console.warn('[WARNING] User has no settings and no fresh provider token. Forcing sign-out to get a new Google token.');
+        await supabase.auth.signOut();
+        setTasks([]);
+        setSession(null);
+        setLoading(false);
+        return;
+      }
       console.log('[INFO] No settings found for user. Triggering onboarding recovery...');
       handleOnboarding(activeSess);
     }
