@@ -217,10 +217,7 @@ export default function App() {
         // We now call the unified edge function 'sync'
         // FIX: Explicitly pass the user JWT. Sometimes supabase-js sends the anon key during initial sign-in races.
         const payload = {
-          body: bootstrapTokens || {},
-          headers: {
-            Authorization: `Bearer ${activeSess.access_token}`
-          }
+          body: bootstrapTokens || {}
         };
         const { data, error } = await supabase.functions.invoke('sync', payload);
         

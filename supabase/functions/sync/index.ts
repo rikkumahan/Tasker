@@ -372,11 +372,22 @@ Deno.serve(async (req: Request) => {
     if (tokenStr === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) {
       if (reqBody.user_id) user = { id: reqBody.user_id };
     } else {
-      const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(tokenStr);
-      if (!authError && authData.user) user = authData.user;
+      // Decode the JWT directly since API Gateway (verify_jwt: true) already validated it.
+      // This bypasses the GoTrue rate limits on getUser().
+      try {
+        const base64Url = tokenStr.split('.')[1];
+        if (base64Url) {
+          const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+          const payload = JSON.parse(jsonPayload);
+          if (payload.sub) user = { id: payload.sub, email: payload.email };
+        }
+      } catch (e) {
+        console.error("JWT Decode error", e);
+      }
     }
 
-    if (!user) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
+    if (!user) return new Response(JSON.stringify({ error: "Unauthorized (JWT Decode Failed)" }), { status: 401, headers: corsHeaders });
 
     let { data: settings } = await supabaseAdmin.from("user_settings").select("*").eq("user_id", user.id).single();
     
