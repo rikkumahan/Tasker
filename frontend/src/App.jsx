@@ -179,6 +179,8 @@ export default function App() {
         await fetchTasks(sess);
     } catch (e) {
         console.error("Onboarding error", e);
+        // Clear session so the user gets cleanly kicked out if onboarding fatally fails
+        // Or just leave them in loading state if preferred, but breaking the loop is key.
     }
     setLoading(false);
   };
@@ -205,7 +207,13 @@ export default function App() {
     try {
       while (keepSyncing) {
         // We now call the unified edge function 'sync'
-        const payload = bootstrapTokens ? { body: bootstrapTokens } : {};
+        // FIX: Explicitly pass the user JWT. Sometimes supabase-js sends the anon key during initial sign-in races.
+        const payload = {
+          body: bootstrapTokens || {},
+          headers: {
+            Authorization: `Bearer ${activeSess.access_token}`
+          }
+        };
         const { data, error } = await supabase.functions.invoke('sync', payload);
         
         if (error) {
@@ -245,6 +253,7 @@ export default function App() {
       }
     } catch (e) {
       console.error('Sync trigger error:', e);
+      throw e;
     } finally {
       setSyncing(false);
     }
