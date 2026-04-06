@@ -1,0 +1,9 @@
+e_01_standard_pii PASS
+e_02_jwt_secret FAIL OUT=Your [ERASED_PASSWORD] [ERASED_JWT]. Please secure it.
+e_03_aws_secret PASS
+e_04_contextual_password PASS
+e_05_false_positive_trap PASS
+e_06_luhn_cc_valid PASS
+e_07_luhn_cc_invalid PASS
+e_08_otp_redaction PASS
+SCORE: 7/8

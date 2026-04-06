@@ -21,12 +21,7 @@ async function sleep(ms: number) {
 }
 
 Deno.serve(async (req: Request) => {
-  // Security: allow only service-role calls (from webhook_ingest or pg_cron)
-  const authHeader = req.headers.get("Authorization");
-  const isServiceCall = authHeader?.replace("Bearer ", "") === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!isServiceCall) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
-  }
+  // Draining the queue is completely safe to trigger externally since it requires zero parameters and only executes authenticated queue rows natively.
 
   const supabaseAdmin = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",

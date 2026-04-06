@@ -1,0 +1,93 @@
+[
+  {
+    "id": "e_01_standard_pii",
+    "description": "Standard PII should be masked and rehydratable.",
+    "input": "Contact me at rikku@example.com or call +91-98765-43210. IP is 10.0.0.1.",
+    "expect_redacted_matches": ["[ERASED_EMAIL]", "[ERASED_PHONE]", "[ERASED_IP]"],
+    "expect_not_redacted": ["Contact", "me", "at"]
+  },
+  {
+    "id": "e_02_jwt_secret",
+    "description": "JWT should be permanently erased.",
+    "input": "Your token is eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoyNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c. Please secure it.",
+    "expect_redacted_matches": ["[ERASED_JWT]"],
+    "expect_not_redacted": ["Your", "token", "is"]
+  },
+  {
+    "id": "e_03_aws_secret",
+    "description": "AWS Keys should be permanently erased.",
+    "input": "Use AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE and secret: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY.",
+    "expect_redacted_matches": ["[ERASED_API-KEY]", "[ERASED_PASSWORD]"],
+    "expect_not_redacted": ["AWS_ACCESS_KEY_ID"]
+  },
+  {
+    "id": "e_04_contextual_password",
+    "description": "Short code following 'key:' trigger should be erased.",
+    "input": "save the server with key:78907. also my house code: 1234.",
+    "expect_redacted_matches": ["[ERASED_PASSWORD]"],
+    "expect_not_redacted": ["save", "server"]
+  },
+  {
+    "id": "e_05_false_positive_trap",
+    "description": "Dates and times should NOT be redacted.",
+    "input": "Meeting on 2024-12-01 at 14:00. Room number 500.",
+    "expect_not_redacted": ["2024-12-01", "14:00", "500"],
+    "expect_redacted_matches": []
+  },
+  {
+    "id": "e_06_luhn_cc_valid",
+    "description": "Valid Credit Card should be erased.",
+    "input": "Charge it to 4242-4242-4242-4242 please.",
+    "expect_redacted_matches": ["[ERASED_CREDIT-CARD"],
+    "expect_not_redacted": ["Charge"]
+  },
+  {
+    "id": "e_07_luhn_cc_invalid",
+    "description": "Invalid Credit Card (random digits) should NOT be erased as a CC.",
+    "input": "The tracking ID is 1234-5678-9012-3456.",
+    "expect_not_redacted": ["1234-5678-9012-3456"],
+    "expect_redacted_matches": []
+  },
+  {
+    "id": "e_08_otp_redaction",
+    "description": "OTPs and verification codes should be erased.",
+    "input": "Your OTP is 987654. Use verification code 1234 to login. Your secret token is: 5566.",
+    "expect_redacted_matches": ["[ERASED_PASSWORD]"],
+    "expect_not_redacted": ["Your", "Use", "to login"]
+  },
+  {
+    "id": "e_10_aadhaar",
+    "description": "Indian Aadhaar number (12 digits) should be permanently erased.",
+    "input": "My Aadhaar number is 2345 6789 0123 and DOB is 1999-01-15.",
+    "expect_redacted_matches": ["[ERASED_AADHAAR]"],
+    "expect_not_redacted": ["My", "and", "DOB is"]
+  },
+  {
+    "id": "e_11_pan",
+    "description": "Indian PAN card should be permanently erased.",
+    "input": "My PAN card is ABCDE1234F and I need to file my taxes.",
+    "expect_redacted_matches": ["[ERASED_PAN]"],
+    "expect_not_redacted": ["My", "PAN card is", "and"]
+  },
+  {
+    "id": "e_12_ifsc",
+    "description": "Indian IFSC bank routing code should be permanently erased.",
+    "input": "Please transfer to SBIN0001234 account no. 00112233445566.",
+    "expect_redacted_matches": ["[ERASED_IFSC]"],
+    "expect_not_redacted": ["Please", "transfer", "account"]
+  },
+  {
+    "id": "e_13_gstin",
+    "description": "GST Identification Number should be permanently erased.",
+    "input": "Our GSTIN is 27ABCDE1234F1Z5 and we operate in Maharashtra.",
+    "expect_redacted_matches": ["[ERASED_GSTIN]"],
+    "expect_not_redacted": ["Our", "and we operate"]
+  },
+  {
+    "id": "e_14_indian_phone_false_positive",
+    "description": "A plain 10-digit number without +91 prefix that is used as a tracking ID should NOT be treated as phone.",
+    "input": "Order ref: 9876543210 will arrive tomorrow.",
+    "expect_not_redacted": ["Order ref:", "will arrive tomorrow"],
+    "expect_redacted_matches": []
+  }
+]

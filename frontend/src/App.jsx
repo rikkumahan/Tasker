@@ -105,6 +105,7 @@ export default function App() {
 
     // Realtime subscription — BUG FIX 1: use sessionRef so the closure is never stale
     let channel = null;
+    let settingsChannel = null;
     if (supabase) {
       channel = supabase
         .channel('tasks-realtime')
@@ -112,10 +113,19 @@ export default function App() {
           if (sessionRef.current) fetchTasks(sessionRef.current);
         })
         .subscribe();
+
+      // Also listen for user_settings changes (e.g., categories updated by sync engine)
+      settingsChannel = supabase
+        .channel('settings-realtime')
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'user_settings' }, () => {
+          if (sessionRef.current) fetchTasks(sessionRef.current);
+        })
+        .subscribe();
     }
 
     return () => {
       if (channel && supabase) supabase.removeChannel(channel);
+      if (settingsChannel && supabase) supabase.removeChannel(settingsChannel);
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
@@ -136,7 +146,7 @@ export default function App() {
     // Fetch user settings for synced time + trigger lock
     const { data: settingsData, error: settingsError } = await supabase
       .from('user_settings')
-      .select('last_synced_at, last_sync_triggered_at, user_profile')
+      .select('last_synced_at, last_sync_triggered_at, user_profile, categories')
       .eq('user_id', activeSess.user.id)
       .maybeSingle();
 
