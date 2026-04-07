@@ -3,6 +3,16 @@
 
 # Auto-generated Temporary Files
 .tmp/
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# IDE files
+.vscode/
+.idea/
+.DS_Store
 
 # Google OAuth
 credentials.json
@@ -16,3 +26,8 @@ frontend/config.js
 .agent/
 _agents/
 _agent/
+
+# Temporary and local development files
+tmp_skills/
+.skills_temp/
+supabase/.temp/
