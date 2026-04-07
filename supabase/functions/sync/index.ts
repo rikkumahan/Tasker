@@ -92,6 +92,12 @@ function prePassRedact(text: string): string {
   return out;
 }
 
+// ── TEMPORAL UTILITIES ──
+function getSeason(monthIndex: number): string {
+  const seasons = ['Winter', 'Spring', 'Summer', 'Fall'];
+  return seasons[Math.floor(monthIndex / 3)];
+}
+
 // ── MATH UTILITIES ──
 function shannonEntropy(str: string): number {
   const freq: Record<string, number> = {};
@@ -317,27 +323,33 @@ const evolvePersonaFromTasks = async (
 ): Promise<{ updatedProfile: string; updatedCategories: string[] }> => {
   if (rawTasks.length === 0) return { updatedProfile: currentProfile, updatedCategories: currentCategories };
 
-  const taskSample = rawTasks.map(t => `- "${t.title || t.summary || "Untitled"}" (Deadline: ${t.deadline || "none"})`).join("\n");
-
-  const personaPrompt = `Here is the user's historical context:
-"${currentProfile}"
-Current Categories: [${currentCategories.join(", ")}]
-
-Newly extracted tasks:
-${taskSample}
-
-Based on these NEW TASKS, EVOLVE their context.
-1. Add new habits/patterns you discover.
-2. Gracefully retire completely outdated tasks or projects.
-3. CRITICAL LIMIT: DO NOT change the user's fundamental profession/identity (e.g., if they are a College Student, do not make them a Software Engineer).
-4. DYNAMICALLY update the category list to reflect their real life. You MAY add new broad, generic life-domain categories as new patterns emerge (e.g., if they start research → add "Research", gym emails → add "Health & Fitness").
-   - Categories must be BROAD enough to hold MANY different tasks.
-   - STRICTLY FORBIDDEN: event names, task titles, subject codes, technical jargon, single-use labels.
-   - GOOD: "Academics", "Career & Internships", "Personal", "Health & Fitness", "Events & Activities", "Research", "Finance"
-   - BAD: "EQUINOX 2026", "RE-MIDTERM", "Tech Talk", "NVIDIA Workshop"
-
-JSON ONLY format:
-{ "user_profile": "...", "categories": ["Academics", "Career & Internships", "..."] }`;
+   // Calculate temporal context
+   const now = new Date();
+   const month = now.toLocaleString('default', { month: 'long' });
+   const season = getSeason(now.getMonth());
+   const quarter = `Q${Math.floor(now.getMonth() / 3) + 1}`;
+   
+   const taskSample = rawTasks.map(t => `- "${t.title || t.summary || "Untitled"}" (Deadline: ${t.deadline || "none"})`).join("\n");
+   
+   const personaPrompt = `Here is the user's historical context:
+ "${currentProfile}"
+ Current Categories: [${currentCategories.join(", ")}]
+ Current Temporal Context: ${month}, ${season} (${quarter})
+ 
+ Newly extracted tasks:
+ ${taskSample}
+ 
+ Based on these NEW TASKS, EVOLVE their context.
+ 1. Add new habits/patterns you discover.
+ 2. Gracefully retire completely outdated tasks or projects.
+ 3. CRITICAL LIMIT: DO NOT change the user's fundamental profession/identity (e.g., if they are a College Student, do not make them a Software Engineer).
+ 4. DYNAMICALLY create meaningful, highly-personalized categories that represent the user's active life blocks, courses, or long-term projects.
+    - CLUSTER similar tasks together. DO NOT create a separate category for every single task. 
+    - A category should be specific to their context but capable of holding multiple tasks (e.g., "Equinox Hackathon Prep", "AWS Cloud Coursework", "Campus Placements").
+    - Do NOT use the exact task title as the category name. Generalize it into an ongoing theme or project bucket.
+ 
+ JSON ONLY format:
+ { "user_profile": "...", "categories": ["Equinox Hackathon", "Cloud Coursework", "Personal Leisure", "..."] }`;
 
   try {
     const pRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
@@ -383,33 +395,54 @@ const categorizeTasks = async (
   const tasksToCategorize = rawTasks.filter(t => !t.is_update && t.category !== "Check_Out_Mail");
   let categoryMapping: Record<string, string> = {};
   
-  if (tasksToCategorize.length > 0) {
-    const catPrompt = `User Profile: "${updatedProfile}"
-Existing Categories: [${currentCategories.join(", ")}]
-
-Tasks to classify:
-${tasksToCategorize.map(t => `- "${t.title}"`).join("\n")}
-
-Rules:
-- Map every task to the single most fitting existing category.
-- If a task genuinely doesn't fit ANY existing category, you MAY introduce ONE new generic life-domain category (e.g., "Research", "Finance", "Health & Fitness").
-- STRICTLY FORBIDDEN: using event names, task titles, or anything that applies to only one specific task as a new category.
-
-JSON ONLY format: { "Task Title": "ExactCategoryName" }`;
-    try {
-      const res = await fetch("https://api.sarvam.ai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${getPersonaKey()}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: catPrompt }] })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const match = (data.choices?.[0]?.message?.content || "").match(/\{[\s\S]*\}/);
-        if (match) categoryMapping = JSON.parse(match[0]);
-      }
-    } catch (e) {
-      console.error("Stage 3 API err", e);
-    }
+   if (tasksToCategorize.length > 0) {
+     const catPrompt = `User Profile: "${updatedProfile}"
+ Existing Dynamic Categories: [${currentCategories.join(", ")}]
+ 
+ Tasks to classify:
+ ${tasksToCategorize.map(t => `- "${t.title}"`).join("\n")}
+ 
+ Rules:
+ - Map every task to the single most fitting existing category from the list above.
+ - If a task genuinely does not belong in any existing category, you MUST introduce a new, meaningful semantic cluster for it.
+ - A new category must be an ongoing project, theme, or context (e.g., "React Native Workshop", "Job Hunting", "Final Exams").
+ - DO NOT use the exact task title as the category name. Generalize it slightly so future related tasks can share the bubble.
+ - Provide a confidence score (0.0 to 1.0) for each mapping indicating your certainty.
+ 
+     JSON ONLY format: [ { "task": "Task Title", "category": "ExactCategoryName", "confidence": 0.95 } ]`;
+     try {
+       const res = await fetch("https://api.sarvam.ai/v1/chat/completions", {
+         method: "POST",
+         headers: { "Authorization": `Bearer ${getPersonaKey()}`, "Content-Type": "application/json" },
+         body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: catPrompt }] })
+       });
+       if (res.ok) {
+         const data = await res.json();
+         let content = data.choices?.[0]?.message?.content || "";
+         
+         // Strip markdown JSON backticks safely to prevent parse failures
+         content = content.replace(/```json/g, "").replace(/```/g, "").trim();
+         
+         const match = content.match(/\[[\s\S]*\]/);
+         if (match) {
+           const categoryArray = JSON.parse(match[0]);
+           // Convert array format to mapping for backward compatibility
+           categoryArray.forEach((item: any) => {
+             if (item.task && item.category && item.confidence !== undefined) {
+               // Apply confidence threshold: only accept mappings with confidence >= 0.6
+               if (item.confidence >= 0.6) {
+                 categoryMapping[item.task] = item.category;
+               } else {
+                 // Low confidence mappings are rejected and will fall back to default
+                 console.log(`[STAGE 3] Low confidence rejection: "${item.task}" -> "${item.category}" (confidence: ${item.confidence})`);
+               }
+             }
+           });
+         }
+       }
+     } catch (e) {
+       console.error("Stage 3 API err", e);
+     }
   }
 
    for (const t of rawTasks) {
@@ -446,22 +479,25 @@ JSON ONLY format: { "Task Title": "ExactCategoryName" }`;
       continue;
     }
 
-    // Apply strict AI mapping — allow new generic categories from the LLM
-    let normalizedCat = categoryMapping[t.title];
-    if (!normalizedCat) {
-      normalizedCat = currentCategories[0] || "General";
-    } else if (!currentCategories.includes(normalizedCat)) {
-      // A new category was proposed by Stage 3 — only accept if it looks generic
-      // (not an event name: heuristic = no year, no ALL_CAPS, reasonable length)
-      const isGeneric = normalizedCat.length < 40 && !/\d{4}/.test(normalizedCat) && normalizedCat === normalizedCat.trim();
-      if (isGeneric) {
-        currentCategories.push(normalizedCat);
-        await supabaseAdmin.from("user_settings").update({ categories: currentCategories }).eq("id", settingsId);
-        console.log(`[STAGE 3] New generic category added: "${normalizedCat}"`);
-      } else {
-        normalizedCat = currentCategories[0] || "General";
-      }
-    }
+     // Apply strict AI mapping — allow new dynamic functional categories from the LLM
+     let normalizedCat = categoryMapping[t.title];
+     if (!normalizedCat) {
+       // Task had no mapping or was filtered out due to low confidence (< 0.6)
+       // Route to Check_Out_Mail to prevent hallucinations
+       normalizedCat = "Check_Out_Mail";
+     } else if (!currentCategories.includes(normalizedCat)) {
+       // A new category was proposed by Stage 3
+       // We accept it, but do a quick sanity check to make sure it's not a hallucination or an entire block of text
+       const isMeaningful = normalizedCat.length > 2 && normalizedCat.length < 50 && normalizedCat === normalizedCat.trim();
+       if (isMeaningful) {
+         currentCategories.push(normalizedCat);
+         await supabaseAdmin.from("user_settings").update({ categories: currentCategories }).eq("id", settingsId);
+         console.log(`[STAGE 3] New semantic cluster added: "${normalizedCat}"`);
+       } else {
+         // Invalid category proposal, fall back to Check_Out_Mail for safety
+         normalizedCat = "Check_Out_Mail";
+       }
+     }
 
     finalTasks.push({ ...t, category: normalizedCat, user_id: userId, source_email_id: originalEmail.id });
   }
@@ -734,11 +770,20 @@ Deno.serve(async (req: Request) => {
     const pendingTasksContext = (pendingTasksData || [])
       .map((t: any) => `[TASK_ID: ${t.id}] "${t.title}" | Deadline: ${t.deadline || "none"} | Category: ${t.category}`).join("\n");
 
-    // Behavioral telemetry context
-    const recentActions: string[] = settings.recent_actions || [];
-    const actionContext = recentActions.length > 0
-      ? `\nUSER'S RECENT BEHAVIOR:\n${recentActions.join("\n")}\nCRITICAL: If an email matches the type recently DELETED, assign category "Check_Out_Mail".`
-      : "";
+     // Behavioral telemetry context
+     const recentActions: string[] = settings.recent_actions || [];
+     
+     // Calculate Task Completion Rate from recentActions
+     const completedActions = recentActions.filter(action => action.startsWith("Completed"));
+     const deletedActions = recentActions.filter(action => action.startsWith("Deleted"));
+     const totalFinishedActions = completedActions.length + deletedActions.length;
+     const taskCompletionRate = totalFinishedActions > 0 
+       ? (completedActions.length / totalFinishedActions) 
+       : 0.5; // Default to neutral if no data
+     
+     const actionContext = recentActions.length > 0
+       ? `\nUSER'S RECENT BEHAVIOR:\n${recentActions.join("\n")}\nTask Completion Rate: ${(taskCompletionRate * 100).toFixed(0)}% (Completed: ${completedActions.length}, Deleted: ${deletedActions.length})\nCRITICAL: If an email matches the type recently DELETED, assign category "Check_Out_Mail".`
+       : "";
 
     // Default persona for brand new users
     let currentProfile = settings.user_profile;
@@ -746,6 +791,9 @@ Deno.serve(async (req: Request) => {
       currentProfile = "A busy professional seeking to organize their schedule, extract actionable tasks from communications, and manage deadlines efficiently.";
     }
     let currentCategories: string[] = settings.categories || [];
+    if (currentCategories.length === 0) {
+      currentCategories = ["Inbox", "General Tasks"];
+    }
 
     const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
     const CHUNK_SIZE = 10;
