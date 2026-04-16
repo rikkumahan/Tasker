@@ -8,7 +8,9 @@ const SECRET_REGEXES = [
   { regex: /AKIA[0-9A-Z]{16}/g,               tag: "[ERASED_API-KEY]" },
   { regex: /sk_live_[0-9a-zA-Z]{24}/g,        tag: "[ERASED_STRIPE-KEY]" },
   { regex: /ghp_[A-Za-z0-9]{36}/g,            tag: "[ERASED_GH-TOKEN]" },
-  { regex: /(?:\bpassword|\bpwd|\bsecret|\bkey|\bcode|\botp|\bverification|\blogin)[:\s=]+(?:is\s+)?(?![\[])([^\s\.]+)/gi, tag: "[ERASED_PASSWORD]" },
+  // 'token' is intentionally excluded — it's used as a trigger for JWTs which are caught by the eyJ regex first.
+  // Capture group uses [^\s\.[  ] to stop at '[' so it does NOT swallow already-erased [ERASED_...] tags.
+  { regex: /(?:\bpassword|\bpwd|\bsecret|\bkey|\bcode|\botp|\bverification|\blogin)[:\s=]+(?:is\s+)?(?![\[])([^\s\.[]+)/gi, tag: "[ERASED_PASSWORD]" },
 
 
   // ── INDIA HIGH-RISK IDENTITY PII (Permanent Erasure) ──
@@ -29,7 +31,7 @@ function prePassRedact(t){let o=t;for(const{regex,tag}of SECRET_REGEXES)o=o.repl
 function luhnValid(s){const d=s.replace(/\D/g,'').split('').map(Number);if(d.length<13||d.length>19)return false;let sum=0,e=false;for(let i=d.length-1;i>=0;i--){let x=d[i];if(e){x*=2;if(x>9)x-=9;}sum+=x;e=!e;}return sum%10===0;}
 
 async function runEvaluation() {
-  const evals = JSON.parse(fs.readFileSync(path.join(process.cwd(),'evals','pii_evals.json'),'utf8'));
+  const evals = JSON.parse(fs.readFileSync(path.join(process.cwd(),'diagnostics','evals','pii_evals.json'),'utf8'));
   console.log("\n HIGH-FIDELITY PII ENGINE - EVAL SUITE (" + evals.length + " tests)\n");
   let passed = 0;
   for(const test of evals) {

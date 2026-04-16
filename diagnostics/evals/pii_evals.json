@@ -89,5 +89,26 @@
     "input": "Order ref: 9876543210 will arrive tomorrow.",
     "expect_not_redacted": ["Order ref:", "will arrive tomorrow"],
     "expect_redacted_matches": []
+  },
+  {
+    "id": "e_09_webhook",
+    "description": "A webhook URL should NOT be redacted as a password, even in a sentence about sending data.",
+    "input": "Send it to https://hooks.example.com/abc123XYZ immediately.",
+    "expect_not_redacted": ["Send it to", "https://hooks.example.com/abc123XYZ", "immediately"],
+    "expect_redacted_matches": []
+  },
+  {
+    "id": "e_15_url_with_keyword_in_path",
+    "description": "URL containing 'key' in the path — the URL itself must NOT be erased. Only explicit labeled 'key: value' patterns should be caught.",
+    "input": "Endpoint is https://api.example.com/key/status. No secret here.",
+    "expect_not_redacted": ["https://api.example.com/key/status", "Endpoint is"],
+    "expect_redacted_matches": []
+  },
+  {
+    "id": "e_16_erased_tag_not_swallowed",
+    "description": "Once a JWT is erased by Stage 1, the labeled-secrets regex must NOT re-erase the [ERASED_JWT] placeholder tag.",
+    "input": "Your token is eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk.",
+    "expect_redacted_matches": ["[ERASED_JWT]"],
+    "expect_not_redacted": ["Your", "token", "is"]
   }
 ]

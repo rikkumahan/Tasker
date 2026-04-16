@@ -160,14 +160,8 @@ export default function App() {
         return; 
       }
 
-      const lastSync = settingsData.last_synced_at;
-      if (lastSync) {
-        const minsAgo = (Date.now() - new Date(lastSync).getTime()) / 60000;
-        if (minsAgo > 30) {
-          console.log('[INFO] Data stale (> 30 min). Triggering silent background sync.');
-          triggerSync(activeSess, settingsData);
-        }
-      }
+      // Push-Only: Do NOT poll here. Webhook + Realtime handles live updates.
+      // Manual sync button or cold-start onboarding are the only triggers.
     } else if (!settingsError) {
       // NO SETTINGS AT ALL: Full Ghost User Recovery
       if (!activeSess.provider_token) {
@@ -206,7 +200,7 @@ export default function App() {
   // Core sync trigger — shared by button AND auto-stale check
   const triggerSync = async (sess, freshSettings, bootstrapTokens = null) => {
     const activeSess = sess || sessionRef.current;
-    if (!activeSess) return;
+    if (!activeSess || syncing) return;
 
     // 60-second debounce lock via DB timestamp
     const settings = freshSettings || userSettings;
@@ -219,58 +213,33 @@ export default function App() {
     }
 
     setSyncing(true);
-    let keepSyncing = true;
-    let baseRetrySleep = 5000;
+    const triggerStart = Date.now();
 
     try {
-      while (keepSyncing) {
-        // We now call the unified edge function 'sync'
-        // FIX: Explicitly pass the user JWT. Sometimes supabase-js sends the anon key during initial sign-in races.
-        const payload = {
-          body: bootstrapTokens || {}
-        };
-        const { data, error } = await supabase.functions.invoke('sync', payload);
-        
-        if (error) {
-          // If we hit Sarvam's rate limit, the edge function forwards a 429
-          if (error.status === 429 || (error.message && error.message.includes('429'))) {
-             // JITTERED EXPONENTIAL BACKOFF: 
-             // Stop the Thundering Herd by adding random offset
-             const jitter = Math.random() * 3000;
-             const sleepTime = baseRetrySleep + jitter;
-             console.warn(`[WARNING] 429 Rate Limit. Sleeping for ${Math.round(sleepTime)}ms before retry...`);
-             
-             await new Promise(res => setTimeout(res, sleepTime));
-             
-             // Multiply base for next failure (max out at 30 seconds)
-             baseRetrySleep = Math.min(baseRetrySleep * 1.5, 30000);
-             continue; // Loop again with the same chunk queue
-          } else {
-             throw error; // Not a 429, fatal error
-          }
-        }
-
-        console.log(`[INFO] Chunk complete. Processed: ${data?.processed_ids?.length || 0}. Remaining: ${data?.remaining || 0}`);
-        
-        // Progressive UI Updating! 
-        // We fetch tasks immediately after every chunk so the user sees them load in sequentially
-        await fetchTasks(activeSess); 
-        
-        // Reset retry sleep if successful
-        baseRetrySleep = 5000;
-
-        if (!data || data.remaining <= 0) {
-           keepSyncing = false;
+      // THE V20 WAY: Trigger one burst. The server hands off history to the Background Worker.
+      const payload = { body: bootstrapTokens || {} };
+      const { data, error } = await supabase.functions.invoke('sync', payload);
+      
+      if (error) {
+        if (error.status === 429) {
+           console.warn('[WARNING] Rate limit on initial trigger.');
         } else {
-           // Tiny breather between successful chunk calls
-           await new Promise(res => setTimeout(res, 500));
+           throw error;
         }
       }
+
+      console.log(`[V20] Initial burst complete. Remaining: ${data?.remaining || 0}`);
+      
+      // Fetch results of first burst
+      await fetchTasks(activeSess); 
+      
     } catch (e) {
       console.error('Sync trigger error:', e);
-      throw e;
     } finally {
-      setSyncing(false);
+      // Ensure the "Syncing..." text is visible for at least 1.5s to prevent "flicker"
+      const elapsed = Date.now() - triggerStart;
+      const wait = Math.max(1500 - elapsed, 0);
+      setTimeout(() => setSyncing(false), wait);
     }
   };
 
