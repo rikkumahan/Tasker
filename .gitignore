@@ -31,3 +31,15 @@ _agent/
 tmp_skills/
 .skills_temp/
 supabase/.temp/
+
+# AI tool configurations
+.claude/
+.cursorrules
+.mcp.json
+.opencode.json
+.windsurfrules
+
+# Temporary AI documentation
+AGENTS.md
+CLAUDE.md
+GEMINI.md
