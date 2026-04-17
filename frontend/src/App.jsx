@@ -83,12 +83,16 @@ export default function App() {
   // Debounce refs for Realtime — prevents flicker from rapid-fire DB events during background sync
   const taskDebounceRef = React.useRef(null);
   const settingsDebounceRef = React.useRef(null);
+  const onboardingAttemptedRef = React.useRef(false); // Guard against recursive onboarding loops
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       sessionRef.current = session;
       setSession(session);
-      if (session) fetchTasks(session);
+      if (session) {
+        fetchTasks(session);
+        checkHealthAndOnboard(session);
+      }
     });
 
     supabase.auth.onAuthStateChange(async (_event, newSession) => {
@@ -96,11 +100,12 @@ export default function App() {
       setSession(newSession);
       if (newSession) {
         // BUG FIX 3: Only onboard on true first-time SIGNED_IN, not on session restores.
-        // Session restores fire SIGNED_IN too, but provider_token is null for restores.
         if (_event === 'SIGNED_IN' && newSession.provider_token) {
           handleOnboarding(newSession);
+        } else {
+          fetchTasks(newSession);
+          checkHealthAndOnboard(newSession);
         }
-        fetchTasks(newSession);
       } else {
         setTasks([]);
       }
@@ -169,30 +174,29 @@ export default function App() {
 
     if (settingsData) {
       setUserSettings(settingsData);
-      
-      // AUTO-RECOVERY: If user exists in Auth but onboarding crashed (no profile)
-      if (!settingsData.user_profile) {
-        console.log('[INFO] User missing profile. Attempting re-onboarding recovery...');
-        handleOnboarding(activeSess);
-        return; 
-      }
-
-      // Push-Only: Do NOT poll here. Webhook + Realtime handles live updates.
-      // Manual sync button or cold-start onboarding are the only triggers.
     } else if (!settingsError) {
       // NO SETTINGS AT ALL: Full Ghost User Recovery
       if (!activeSess.provider_token) {
-        console.warn('[WARNING] User has no settings and no fresh provider token. Forcing sign-out to get a new Google token.');
+        console.warn('[WARNING] User has no settings and no fresh provider token. Forcing sign-out.');
         await supabase.auth.signOut();
         setTasks([]);
         setSession(null);
-        setLoading(false);
-        return;
       }
-      console.log('[INFO] No settings found for user. Triggering onboarding recovery...');
-      handleOnboarding(activeSess);
     }
     setLoading(false);
+  };
+
+  // Dedicated recovery checker — separate from the data loader to prevent loops
+  const checkHealthAndOnboard = async (sess) => {
+    if (onboardingAttemptedRef.current || !sess) return;
+    onboardingAttemptedRef.current = true;
+    
+    const { data: settings } = await supabase.from('user_settings').select('user_profile').eq('user_id', sess.user.id).maybeSingle();
+    
+    if (!settings || !settings.user_profile) {
+      console.log('[INFO] User missing profile. Initiating first-time sync...');
+      await handleOnboarding(sess);
+    }
   };
 
   const handleOnboarding = async (sess) => {
