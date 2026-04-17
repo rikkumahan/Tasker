@@ -630,40 +630,43 @@ Deno.serve(async (req: Request) => {
     let user: any = null;
     let reqBody: any = {};
     try { reqBody = await req.json(); } catch { }
-    const tokenStr = authHeader.replace("Bearer ", "");
+    let tokenStr = authHeader.replace(/^Bearer\s+/i, "");
 
     if (tokenStr === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) {
       if (reqBody.user_id) user = { id: reqBody.user_id };
     } else {
-      // Decode the JWT directly since API Gateway (verify_jwt: true) already validated it.
-      // This bypasses the GoTrue rate limits on getUser().
+      // Decode the JWT. API Gateway (verify_jwt: true) already validated signature.
       try {
         const tokenParts = tokenStr.split('.');
         if (tokenParts.length < 2) {
           console.error("Invalid JWT format");
         } else {
           const base64Url = tokenParts[1];
-          if (base64Url) {
-            let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-            const pad = base64.length % 4;
-            if (pad) {
-              base64 += '='.repeat(4 - pad);
-            }
-            try {
-              const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
-              const payload = JSON.parse(jsonPayload);
-              if (payload.sub) {
-                user = { id: payload.sub, email: payload.email || "" };
-              } else if (payload.role === "service_role" && reqBody.user_id) {
-                user = { id: reqBody.user_id };
-              }
-            } catch (parseError: any) {
-              console.error("JWT payload parse error:", parseError.message);
-            }
+          let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          const pad = base64.length % 4;
+          if (pad) base64 += '='.repeat(4 - pad);
+          
+          const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+          const payload = JSON.parse(jsonPayload);
+          
+          if (payload.sub) {
+            user = { id: payload.sub, email: payload.email || "" };
+          } else if (payload.role === "service_role" && reqBody.user_id) {
+            user = { id: reqBody.user_id };
           }
         }
-      } catch (e) {
-        console.error("JWT Decode error", e);
+      } catch (e: any) {
+        console.error("JWT Decode error via manual parse, attempting fallback...", e.message);
+      }
+      
+      // Fallback: If manual parse failed or edge cases with Unicode emails broke atob
+      if (!user) {
+        const { data: authData, error: authErr } = await supabaseAdmin.auth.getUser(tokenStr);
+        if (authData?.user) {
+          user = { id: authData.user.id, email: authData.user.email };
+        } else {
+          console.error("Fallback getUser failed:", authErr?.message);
+        }
       }
     }
 
