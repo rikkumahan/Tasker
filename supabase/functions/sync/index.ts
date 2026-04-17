@@ -881,9 +881,29 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Persist
-    if (finalTasks.length > 0) {
-      const { error: upsertError } = await supabaseAdmin.from("tasks").upsert(finalTasks, { onConflict: "source_email_id" });
+    // Persist ghost tasks for emails that produced no actionable tasks
+    // `unprocessedEmails.slice(0, 15)` contains the batch we just processed.
+    // `finalTasks` holds all tasks that will be upserted (including any from rawTasks).
+    // Any email ID in the batch that does NOT appear in `finalTasks` should be recorded as a ghost task
+    // so the dedup engine knows it was processed.
+    const batchEmails = unprocessedEmails.slice(0, 15);
+    const processedEmailIds = new Set(finalTasks.map(t => t.source_email_id));
+    const ghostTasks = batchEmails
+      .filter(e => !processedEmailIds.has(e.id))
+      .map(e => ({
+        title: "[IGNORED_EMAIL]",
+        summary: "Email skipped – no actionable tasks detected",
+        category: "System",
+        status: "ignored",
+        user_id: user.id,
+        source_email_id: e.id,
+        // Minimal fields required by schema; other optional fields left undefined
+      }));
+
+    // Combine ghost tasks with any real tasks before upsert
+    const allTasksToUpsert = [...finalTasks, ...ghostTasks];
+    if (allTasksToUpsert.length > 0) {
+      const { error: upsertError } = await supabaseAdmin.from("tasks").upsert(allTasksToUpsert, { onConflict: "source_email_id" });
       if (upsertError) throw new Error("Failed to persist tasks: " + upsertError.message);
     }
 
