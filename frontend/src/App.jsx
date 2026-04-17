@@ -80,6 +80,9 @@ export default function App() {
   // Store session and intervals in refs so they persist across renders and are accessible in cleanup
   const sessionRef = React.useRef(null);
   const pollRef = React.useRef(null);
+  // Debounce refs for Realtime — prevents flicker from rapid-fire DB events during background sync
+  const taskDebounceRef = React.useRef(null);
+  const settingsDebounceRef = React.useRef(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -104,13 +107,20 @@ export default function App() {
     });
 
     // Realtime subscription — BUG FIX 1: use sessionRef so the closure is never stale
+    // FIX (flicker): Both channels are debounced and use silent=true so the UI never
+    // goes blank during background worker bursts. Tasks debounce=800ms, settings=1500ms
+    // (longer delay avoids thrashing from sync_in_progress/sync_lock_at flag changes).
     let channel = null;
     let settingsChannel = null;
     if (supabase) {
       channel = supabase
         .channel('tasks-realtime')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-          if (sessionRef.current) fetchTasks(sessionRef.current);
+          if (!sessionRef.current) return;
+          if (taskDebounceRef.current) clearTimeout(taskDebounceRef.current);
+          taskDebounceRef.current = setTimeout(() => {
+            fetchTasks(sessionRef.current, true); // silent — no loading spinner
+          }, 800);
         })
         .subscribe();
 
@@ -118,7 +128,11 @@ export default function App() {
       settingsChannel = supabase
         .channel('settings-realtime')
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'user_settings' }, () => {
-          if (sessionRef.current) fetchTasks(sessionRef.current);
+          if (!sessionRef.current) return;
+          if (settingsDebounceRef.current) clearTimeout(settingsDebounceRef.current);
+          settingsDebounceRef.current = setTimeout(() => {
+            fetchTasks(sessionRef.current, true); // silent — no loading spinner
+          }, 1500);
         })
         .subscribe();
     }
@@ -127,13 +141,16 @@ export default function App() {
       if (channel && supabase) supabase.removeChannel(channel);
       if (settingsChannel && supabase) supabase.removeChannel(settingsChannel);
       if (pollRef.current) clearInterval(pollRef.current);
+      if (taskDebounceRef.current) clearTimeout(taskDebounceRef.current);
+      if (settingsDebounceRef.current) clearTimeout(settingsDebounceRef.current);
     };
   }, []);
 
-  const fetchTasks = async (sess) => {
+  // silent=true: skip loading spinner (used by Realtime debounce handlers to prevent flicker)
+  const fetchTasks = async (sess, silent = false) => {
     const activeSess = sess || sessionRef.current;
     if (!supabase || !activeSess) { setLoading(false); return; }
-    setLoading(true);
+    if (!silent) setLoading(true);
 
     const { data, error } = await supabase
       .from('tasks')
