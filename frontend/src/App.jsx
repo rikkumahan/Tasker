@@ -252,7 +252,13 @@ export default function App() {
     try {
       // THE V20 WAY: Trigger one burst. The server hands off history to the Background Worker.
       const payload = { body: bootstrapTokens || {} };
-      const { data, error } = await supabase.functions.invoke('sync', payload);
+      const { data, error } = await supabase.functions.invoke('sync', {
+        ...payload,
+        headers: {
+          Authorization: `Bearer ${activeSess.access_token}`
+        }
+      });
+
       
       if (error) {
         if (error.status === 429) {
