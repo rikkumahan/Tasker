@@ -83,7 +83,7 @@ export default function App() {
   // Debounce refs for Realtime — prevents flicker from rapid-fire DB events during background sync
   const taskDebounceRef = React.useRef(null);
   const settingsDebounceRef = React.useRef(null);
-  const onboardingAttemptedRef = React.useRef(false); // Guard against recursive onboarding loops
+  const initialSyncDoneRef = React.useRef(false); // Guard against recursive sync or onboarding loops
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -91,7 +91,7 @@ export default function App() {
       setSession(session);
       if (session) {
         fetchTasks(session);
-        checkHealthAndOnboard(session);
+        checkSyncHealth(session);
       }
     });
 
@@ -104,7 +104,7 @@ export default function App() {
           handleOnboarding(newSession);
         } else {
           fetchTasks(newSession);
-          checkHealthAndOnboard(newSession);
+          checkSyncHealth(newSession);
         }
       } else {
         setTasks([]);
@@ -186,16 +186,29 @@ export default function App() {
     setLoading(false);
   };
 
-  // Dedicated recovery checker — separate from the data loader to prevent loops
-  const checkHealthAndOnboard = async (sess) => {
-    if (onboardingAttemptedRef.current || !sess) return;
-    onboardingAttemptedRef.current = true;
+  // Dedicated recovery and freshness checker
+  // This runs EXACTLY ONCE on initial app load/auth restore.
+  const checkSyncHealth = async (sess) => {
+    if (initialSyncDoneRef.current || !sess) return;
+    initialSyncDoneRef.current = true;
     
-    const { data: settings } = await supabase.from('user_settings').select('user_profile').eq('user_id', sess.user.id).maybeSingle();
+    // Fetch critical health metrics
+    const { data: settings } = await supabase
+      .from('user_settings')
+      .select('user_profile, last_synced_at')
+      .eq('user_id', sess.user.id)
+      .maybeSingle();
     
     if (!settings || !settings.user_profile) {
       console.log('[INFO] User missing profile. Initiating first-time sync...');
       await handleOnboarding(sess);
+    } else if (settings.last_synced_at) {
+      // Passive Background Heartbeat: Is data stale (> 30 mins) on fresh load?
+      const minsAgo = (Date.now() - new Date(settings.last_synced_at).getTime()) / 60000;
+      if (minsAgo > 30) {
+        console.log(`[INFO] Tasks are ${Math.round(minsAgo)} mins stale on app load. Automatically triggering background refresh.`);
+        await triggerSync(sess, settings);
+      }
     }
   };
 
