@@ -255,6 +255,9 @@ export default function App() {
       const { data, error } = await supabase.functions.invoke('sync', {
         ...payload,
         headers: {
+          // Supabase Edge Functions require BOTH apikey and Authorization.
+          // Passing a custom headers object can override defaults, so include apikey explicitly.
+          apikey: SUPABASE_KEY,
           Authorization: `Bearer ${activeSess.access_token}`
         }
       });
