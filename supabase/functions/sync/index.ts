@@ -928,8 +928,18 @@ Deno.serve(async (req: Request) => {
     // Combine ghost tasks with any real tasks before upsert
     const allTasksToUpsert = [...finalTasks, ...ghostTasks];
     if (allTasksToUpsert.length > 0) {
-      const { error: upsertError } = await supabaseAdmin.from("tasks").upsert(allTasksToUpsert, { onConflict: "source_email_id" });
-      if (upsertError) throw new Error("Failed to persist tasks: " + upsertError.message);
+      console.log(`[UPSERT] Attempting to upsert ${allTasksToUpsert.length} tasks (real: ${finalTasks.length}, ghost: ${ghostTasks.length})`);
+      try {
+        const { error: upsertError } = await supabaseAdmin.from("tasks").upsert(allTasksToUpsert, { onConflict: "source_email_id" });
+        if (upsertError) {
+          await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "UPsert_ERROR", data: { error: upsertError.message, count: allTasksToUpsert.length } });
+          throw new Error("Failed to persist tasks: " + upsertError.message);
+        }
+        console.log(`[UPSERT] Success`);
+      } catch (e: any) {
+        await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "UPsert_CRASH", data: { error: e.message } });
+        throw e;
+      }
     }
 
     // Warning Engine
@@ -939,6 +949,7 @@ Deno.serve(async (req: Request) => {
     const isPageDone = remainingCount === 0;
 
     // ── HANDOFF TO BACKGROUND WORKER ──
+    console.log(`[HANDOFF] isPageDone=${isPageDone}, nextPageToken=${nextPageToken}, remainingCount=${remainingCount}`);
     if (isPageDone && nextPageToken) {
       await supabaseAdmin.from("user_settings").update({
         sync_page_token: nextPageToken,
