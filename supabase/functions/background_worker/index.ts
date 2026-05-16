@@ -44,8 +44,12 @@ Deno.serve(async (req: Request) => {
 
     try {
       // Delegate to sync function (all intelligence stays there)
+      // Explicitly pass Authorization header — supabase-js client may not forward
+      // the service role key correctly when invoking from within an edge function.
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
       const { data, error } = await supabaseAdmin.functions.invoke("sync", {
-        body: { user_id: job.user_id }
+        body: { user_id: job.user_id },
+        headers: { Authorization: `Bearer ${serviceKey}` }
       });
 
       if (error) throw new Error(error.message);
