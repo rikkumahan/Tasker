@@ -12,26 +12,23 @@ const corsHeaders = {
 };
 
 // ─────────────────────────────────────────────
-// LAYER 5: 5-Key Round-Robin LLM Pool (300 RPM)
+// LAYER 5: 2-Key Round-Robin LLM Pool
 // ─────────────────────────────────────────────
 let keyIndex = 0;
 
 const getNextKey = (): string => {
   const keys = [
-    Deno.env.get("SARVAM_API_KEY_A") || Deno.env.get("SARVAM_API_KEY") || "",
-    Deno.env.get("SARVAM_API_KEY_B") || Deno.env.get("SARVAM_API_KEY") || "",
-    Deno.env.get("SARVAM_API_KEY_C") || Deno.env.get("SARVAM_API_KEY") || "",
-    Deno.env.get("SARVAM_API_KEY_D") || Deno.env.get("SARVAM_API_KEY") || "",
-    Deno.env.get("SARVAM_API_KEY_E") || Deno.env.get("SARVAM_API_KEY") || "",
+    Deno.env.get("GROQ_API_KEY") || "",
+    Deno.env.get("GROQ_API_KEY_B") || Deno.env.get("GROQ_API_KEY") || "",
   ];
   const key = keys[keyIndex % keys.length];
   keyIndex++;
   return key;
 };
 
-// Persona Evolution uses Key C only (isolated, low volume)
+// Persona Evolution uses Key B as the secondary key (isolated, low volume)
 const getPersonaKey = (): string =>
-  Deno.env.get("SARVAM_API_KEY_C") || Deno.env.get("SARVAM_API_KEY") || "";
+  Deno.env.get("GROQ_API_KEY_B") || Deno.env.get("GROQ_API_KEY") || "";
 
 // ─────────────────────────────────────────────
 // EMAIL DECODE UTILITIES
@@ -283,10 +280,10 @@ ${batchedText}`;
   while (attemptsLeft > 0 && !exRes) {
     const key = getNextKey();
     try {
-      const res = await fetch("https://api.sarvam.ai/v1/chat/completions", {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: prompt }] }),
         signal: controller.signal
       });
       if (res.status === 429) { attemptsLeft--; await sleep(500); continue; }
@@ -374,10 +371,10 @@ const evolvePersonaFromTasks = async (
  { "user_profile": "...", "categories": ["Equinox Hackathon", "Cloud Coursework", "Personal Leisure", "..."] }`;
 
   try {
-    const pRes = await fetch("https://api.sarvam.ai/v1/chat/completions", {
+    const pRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${getPersonaKey()}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: personaPrompt }] })
+      body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: personaPrompt }] })
     });
     const pData = await pRes.json();
     const match = (pData.choices?.[0]?.message?.content || "").match(/\{[\s\S]*\}/);
@@ -433,10 +430,10 @@ const categorizeTasks = async (
  
      JSON ONLY format: [ { "task": "Task Title", "category": "ExactCategoryName", "confidence": 0.95 } ]`;
     try {
-      const res = await fetch("https://api.sarvam.ai/v1/chat/completions", {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Authorization": `Bearer ${getPersonaKey()}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "sarvam-105b", messages: [{ role: "user", content: catPrompt }] })
+        body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: catPrompt }] })
       });
       if (res.ok) {
         const data = await res.json();

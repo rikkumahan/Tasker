@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-04-18T05:31:27.403Z",
+  "authState": "unknown",
+  "initialScreenshot": "test-results\\ghost-tasks-verification\\01-initial-state.png",
+  "taskCount": 0,
+  "visibleCategories": [],
+  "ghostTasksVisible": false,
+  "ghostTaskDetails": [],
+  "consoleErrors": [
+    "[warning] GoTrueClient@sb-esngoeuhtpdzyfttofyu-auth-token:1 (2.99.0) 2026-04-18T05:31:36.324Z Multiple GoTrueClient instances detected in the same browser context. It is not an error, but this should be avoided as it may produce undefined behavior when used concurrently under the same storage key."
+  ],
+  "networkErrors": [],
+  "networkRequests": [
+    {
+      "url": "https://tasker-kappa-flame.vercel.app/",
+      "status": 200,
+      "type": "document"
+    },
+    {
+      "url": "https://tasker-kappa-flame.vercel.app/assets/index-Tsmhre5z.css",
+      "status": 200,
+      "type": "stylesheet"
+    },
+    {
+      "url": "https://tasker-kappa-flame.vercel.app/assets/index-BwL6HbNb.js",
+      "status": 200,
+      "type": "script"
+    },
+    {
+      "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+      "status": 200,
+      "type": "stylesheet"
+    },
+    {
+      "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+      "status": 200,
+      "type": "font"
+    }
+  ],
+  "uiHealth": "healthy",
+  "summary": "Auth State: unknown\nVisible Tasks: 0\nGhost Tasks Visible: NO ✅ PASS\nUI Health: HEALTHY\nConsole Errors: 1\nNetwork Errors: 0"
+}

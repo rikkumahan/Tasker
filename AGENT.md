@@ -101,5 +101,10 @@ After discovering patterns, gotchas, or codebase conventions:
 - Add them to the relevant section or a new "Learnings" section.
 - Future iterations and human developers rely on this persistent memory.
 
-**2. Update progress.txt**
+**3. Browser Orchestration (New)**
+- You can now control the user's browser via the `page-agent` MCP server.
+- Use the `execute_task` tool to perform complex web interactions (research, navigation, form filling).
+- Backed by **Groq Llama-4 Scout 17B MoE** for high-speed, high-fidelity reasoning and tool use.
+
+**4. Update progress.txt**
 When using the Ralph loop, ensure you append concise summaries of progress and discovered context to `scripts/ralph/progress.txt`. This provides the narrative link between iterations.
