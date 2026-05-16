@@ -728,15 +728,30 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── ATOMIC LOCK ACQUISITION ──
-    // Conditional UPDATE: only succeeds if sync_in_progress is currently false.
-    // This prevents the race condition where multiple syncs read the same state
-    // before any of them could write true (4 syncs within 60ms observed in prod).
-    const { data: lockAcquired } = await supabaseAdmin
-      .from("user_settings")
-      .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
-      .eq("id", settings.id)
-      .eq("sync_in_progress", false)
-      .select("id");
+    // If the lock is stale (sync_in_progress=true but lock >2 min old), force-break it.
+    // Otherwise, use conditional UPDATE to prevent race conditions between concurrent syncs.
+    let lockAcquired: any[] = [];
+    const isStaleLock = (settings as any).sync_in_progress === true && lockAge >= LOCK_TTL_MS;
+
+    if (isStaleLock) {
+      // Force-break stale lock — no conditional needed
+      const { data } = await supabaseAdmin
+        .from("user_settings")
+        .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
+        .eq("id", settings.id)
+        .select("id");
+      lockAcquired = data || [];
+      await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCK_BROKEN", data: { reason: "Stale lock auto-healed", lock_age_ms: lockAge } });
+    } else {
+      // Normal case: conditional UPDATE prevents concurrent race
+      const { data } = await supabaseAdmin
+        .from("user_settings")
+        .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
+        .eq("id", settings.id)
+        .eq("sync_in_progress", false)
+        .select("id");
+      lockAcquired = data || [];
+    }
 
     if (!lockAcquired || lockAcquired.length === 0) {
       await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCKED", data: { reason: "Atomic lock acquisition failed — concurrent sync won the race" } });
