@@ -84,6 +84,7 @@ export default function App() {
   const taskDebounceRef = React.useRef(null);
   const settingsDebounceRef = React.useRef(null);
   const initialSyncDoneRef = React.useRef(false); // Guard against recursive sync or onboarding loops
+  const onboardingTriggeredRef = React.useRef(false); // Prevent double onboarding from race conditions
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -91,7 +92,8 @@ export default function App() {
       setSession(session);
       if (session) {
         fetchTasks(session);
-        checkSyncHealth(session);
+        // checkSyncHealth removed — onAuthStateChange handles onboarding + stale checks
+        // Calling it here caused double-trigger on first sign-in (welcome task x4)
       }
     });
 
@@ -203,16 +205,18 @@ export default function App() {
       console.log('[INFO] User missing profile. Initiating first-time sync...');
       await handleOnboarding(sess);
     } else if (settings.last_synced_at) {
-      // Passive Background Heartbeat: Is data stale (> 30 mins) on fresh load?
-      const minsAgo = (Date.now() - new Date(settings.last_synced_at).getTime()) / 60000;
-      if (minsAgo > 30) {
-        console.log(`[INFO] Tasks are ${Math.round(minsAgo)} mins stale on app load. Automatically triggering background refresh.`);
-        await triggerSync(sess, settings);
-      }
+      // Removed auto-stale-trigger: was firing empty synces on every app load after 30min
+      // wasting LLM quota and creating unnecessary ghost tasks. User can manually sync instead.
+      console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago. Use sync button to refresh.`);
     }
   };
 
   const handleOnboarding = async (sess) => {
+    if (onboardingTriggeredRef.current) {
+      console.log('[INFO] Onboarding already triggered, skipping duplicate call.');
+      return;
+    }
+    onboardingTriggeredRef.current = true;
     setLoading(true);
     try {
         console.log('[INFO] Bootstrapping new user via Unified Sync pipeline...');
