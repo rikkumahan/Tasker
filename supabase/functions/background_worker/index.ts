@@ -43,16 +43,25 @@ Deno.serve(async (req: Request) => {
     if (!job) break; // Queue is empty — exit cleanly (Zero Waste)
 
     try {
-      // Delegate to sync function (all intelligence stays there)
-      // Explicitly pass Authorization header — supabase-js client may not forward
-      // the service role key correctly when invoking from within an edge function.
+      // Delegate to sync function via direct fetch to avoid supabase-js header quirks
       const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-      const { data, error } = await supabaseAdmin.functions.invoke("sync", {
-        body: { user_id: job.user_id },
-        headers: { Authorization: `Bearer ${serviceKey}` }
+      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const syncRes = await fetch(`${supabaseUrl}/functions/v1/sync`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": serviceKey,
+          "Authorization": `Bearer ${serviceKey}`
+        },
+        body: JSON.stringify({ user_id: job.user_id })
       });
 
-      if (error) throw new Error(error.message);
+      if (!syncRes.ok) {
+        const errorBody = await syncRes.text();
+        throw new Error(`Sync returned ${syncRes.status}: ${errorBody}`);
+      }
+
+      const data = await syncRes.json();
 
       // Success: mark job done
       await supabaseAdmin.from("sync_queue")
