@@ -726,11 +726,24 @@ Deno.serve(async (req: Request) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
-    // Acquire lock — always stamp sync_lock_at so TTL expiry works correctly
-    await supabaseAdmin.from("user_settings").update({
-      sync_in_progress: true,
-      sync_lock_at: new Date().toISOString()
-    }).eq("id", settings.id);
+
+    // ── ATOMIC LOCK ACQUISITION ──
+    // Conditional UPDATE: only succeeds if sync_in_progress is currently false.
+    // This prevents the race condition where multiple syncs read the same state
+    // before any of them could write true (4 syncs within 60ms observed in prod).
+    const { data: lockAcquired } = await supabaseAdmin
+      .from("user_settings")
+      .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
+      .eq("id", settings.id)
+      .eq("sync_in_progress", false)
+      .select("id");
+
+    if (!lockAcquired || lockAcquired.length === 0) {
+      await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCKED", data: { reason: "Atomic lock acquisition failed — concurrent sync won the race" } });
+      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 1, locked: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
 
     // ── GMAIL FETCH WITH PAGINATION SUPPORT ──
     const maxResults = 25; // Safe batch size
