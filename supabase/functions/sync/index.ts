@@ -722,7 +722,7 @@ Deno.serve(async (req: Request) => {
 
     if (isSyncInProgress) {
       await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCKED", data: { reason: "Another sync already in progress", lock_age_ms: lockAge } });
-      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 1, locked: true }), {
+      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 0, locked: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
@@ -740,7 +740,7 @@ Deno.serve(async (req: Request) => {
 
     if (!lockAcquired || lockAcquired.length === 0) {
       await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCKED", data: { reason: "Atomic lock acquisition failed — concurrent sync won the race" } });
-      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 1, locked: true }), {
+      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 0, locked: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
