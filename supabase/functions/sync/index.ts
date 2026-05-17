@@ -1,612 +1,31 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { redact } from "npm:@arcjet/redact";
-
-// Regex escaper for safe string replacement
-function escapeRegExp(string: string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+import { corsHeaders } from "../_shared/cors.ts";
+import { decodeBody, sleep } from "../_shared/utils.ts";
+import { refreshGmailToken } from "../_shared/oauth.ts";
+import { extractRawTasks, evolvePersonaFromTasks, categorizeTasks, runWarningEngine } from "../_shared/stages.ts";
 
 // ─────────────────────────────────────────────
-// LAYER 5: 2-Key Round-Robin LLM Pool
+// Supabase Edge Runtime Background Task Helper
+// Safely wraps EdgeRuntime.waitUntil for fire-and-forget work.
 // ─────────────────────────────────────────────
-let keyIndex = 0;
-
-const getNextKey = (): string => {
-  const keys = [
-    Deno.env.get("GROQ_API_KEY") || "",
-    Deno.env.get("GROQ_API_KEY_B") || Deno.env.get("GROQ_API_KEY") || "",
-  ];
-  const key = keys[keyIndex % keys.length];
-  keyIndex++;
-  return key;
-};
-
-// Persona Evolution uses Key B as the secondary key (isolated, low volume)
-const getPersonaKey = (): string =>
-  Deno.env.get("GROQ_API_KEY_B") || Deno.env.get("GROQ_API_KEY") || "";
-
-// ─────────────────────────────────────────────
-// EMAIL DECODE UTILITIES
-// ─────────────────────────────────────────────
-const safeDecode = (data: string): string => {
-  try { return atob(data.replace(/-/g, "+").replace(/_/g, "/")); } catch { return ""; }
-};
-
-const decodeBody = (payload: any): string => {
-  if (!payload) return "";
-  const mime = payload.mimeType || "";
-  if (mime === "text/plain") {
-    const data = payload.body?.data;
-    if (!data) return "";
-    return safeDecode(data);
-  }
-  if (payload.parts && Array.isArray(payload.parts)) {
-    for (const part of payload.parts) {
-      const b = decodeBody(part); if (b) return b;
-    }
-  }
-  return "";
-};
-
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-// ═══════════════════════════════════════════════════════════════
-// THREE-STAGE PII ENGINE (Proven 7/7 Eval Accuracy)
-// ═══════════════════════════════════════════════════════════════
-
-// ── STAGE 1: PRE-PASS REGEX VAULT (Permanent Erasure) ──
-// Runs on raw text BEFORE Arcjet tokenization.
-// Catches multi-token secrets (JWTs split on dots, inline key:value pairs).
-const SECRET_REGEXES: { regex: RegExp; tag: string }[] = [
-  { regex: /eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+/g, tag: "[ERASED_JWT]" },
-  { regex: /AKIA[0-9A-Z]{16}/g, tag: "[ERASED_API-KEY]" },
-  { regex: /sk_live_[0-9a-zA-Z]{24}/g, tag: "[ERASED_STRIPE-KEY]" },
-  { regex: /ghp_[A-Za-z0-9]{36}/g, tag: "[ERASED_GH-TOKEN]" },
-  // Labeled Secrets ("password:", "code:", "otp:") — 'token' excluded to prevent JWT collision
-  { regex: /(?:\bpassword|\bpwd|\bsecret|\bkey|\bcode|\botp|\bverification|\blogin)[:\s=]+(?:is\s+)?(?![\[])([^\s\.]+)/gi, tag: "[ERASED_PASSWORD]" },
-
-  // ── INDIA HIGH-RISK IDENTITY PII (Permanent Erasure) ──
-  // Aadhaar: 12-digit UID in 4+4+4 groups (space-separated).
-  // Negative assertions prevent matching inside 16-digit CC numbers.
-  { regex: /(?<![\d\-])[2-9]\d{3} \d{4} \d{4}(?! \d)/g, tag: "[ERASED_AADHAAR]" },
-  { regex: /(?<![\d\-])[2-9]\d{11}(?![\d\-])/g, tag: "[ERASED_AADHAAR]" },
-  // PAN Card: 5 uppercase letters, 4 digits, 1 uppercase letter (ABCDE1234F)
-  { regex: /\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b/g, tag: "[ERASED_PAN]" },
-  // GSTIN: 15-char business tax ID — 2-digit state code + PAN + Z + checksum
-  { regex: /\b[0-3][0-9][A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b/g, tag: "[ERASED_GSTIN]" },
-  // IFSC Code: 4 uppercase bank letters + 0 + 6 alphanumeric chars
-  { regex: /\b[A-Z]{4}0[A-Z0-9]{6}\b/g, tag: "[ERASED_IFSC]" },
-];
-
-function prePassRedact(text: string): string {
-  let out = text;
-  for (const { regex, tag } of SECRET_REGEXES) out = out.replace(regex, tag);
-  return out;
-}
-
-// ── TEMPORAL UTILITIES ──
-function getSeason(monthIndex: number): string {
-  const seasons = ['Winter', 'Spring', 'Summer', 'Fall'];
-  return seasons[Math.floor(monthIndex / 3)];
-}
-
-// ── MATH UTILITIES ──
-function shannonEntropy(str: string): number {
-  const freq: Record<string, number> = {};
-  for (const c of str) freq[c] = (freq[c] || 0) + 1;
-  return Object.values(freq).reduce((h, n) => {
-    const p = n / str.length; return h - p * Math.log2(p);
-  }, 0);
-}
-
-function luhnValid(str: string): boolean {
-  const digits = str.replace(/\D/g, '').split('').map(Number);
-  if (digits.length < 13 || digits.length > 19) return false;
-  let sum = 0, even = false;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    let d = digits[i];
-    if (even) { d *= 2; if (d > 9) d -= 9; }
-    sum += d; even = !even;
-  }
-  return sum % 10 === 0;
-}
-
-// ─────────────────────────────────────────────
-// POISON PILL DEFENSE: Lenient JSON Parser
-// ─────────────────────────────────────────────
-const lenientParseArray = (text: string): any[] | null => {
-  const arrMatch = text.match(/\[[\s\S]*\]/);
-  if (!arrMatch) return null;
-  try { return JSON.parse(arrMatch[0]); } catch {
-    try {
-      const repaired = arrMatch[0].replace(/,\s*]/g, "]").replace(/,\s*}/g, "}");
-      return JSON.parse(repaired);
-    } catch { return null; }
-  }
-};
-
-
-
-// ═══════════════════════════════════════════════════════════════
-// STAGE 1: UNIVERSAL EXTRACTION (Identity-Blind)
-// No user_profile in prompt. Extracts pure facts from all emails.
-// ═══════════════════════════════════════════════════════════════
-const extractRawTasks = async (
-  emailsToProcess: any[],
-  pendingTasksContext: string,
-  actionContext: string,
-  nowIst: string,
-  supabaseAdmin: any,
-  userId: string
-): Promise<{ rawTasks: any[]; successfullyProcessedIds: string[]; rateLimitHit: boolean }> => {
-  if (emailsToProcess.length === 0) return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit: false };
-
-  // ── THE PRIVACY SCALPEL (Three-Stage Zero-Trust Pipeline) ──
-  const unredactFunctions: Function[] = [];
-  const safeEmails: string[] = [];
-
-  for (const e of emailsToProcess) {
-    let safeBody = e.body || "";
-    let safeSubject = e.subject || "";
-
-    try {
-      const fullText = `Subject: ${safeSubject}\nBody: ${safeBody}`;
-
-      // STAGE 1: Pre-Pass Regex Vault — permanent erasure before tokenization
-      const stage1 = prePassRedact(fullText);
-
-      // STAGE 2: Arcjet WASM + Heuristics — permanent erasure of mathematical SECRETS
-      // Closure array: collect suspicious tokens synchronously in detect(), flush to DB after redact() completes.
-      // This bypasses the 24-hour Edge Function log expiry limitation.
-      const suspiciousTokens: { token: string; entropy: number; email_id: string }[] = [];
-
-      const arcjetConfig = {
-        entities: ["credit-card-number"], // Move CC here as it's a fixed secret, not rehydratable PII
-        contextWindowSize: 5,
-        detect: (tokens: string[]) => {
-          return tokens.map((token: string, i: number) => {
-            // Shannon Entropy & Audit Log
-            if (token.length > 10) {
-              const h = shannonEntropy(token);
-              // High Entropy = Definite Password/Key (Permanent Erasure)
-              if (h > 4.5 && /[0-9]/.test(token) && /[A-Z]/.test(token)) {
-                return "password";
-              }
-              // Medium Entropy = Suspicion Zone
-              // console.warn is ephemeral (expires 24h on Supabase) — collect for persistent DB write below.
-              else if (h > 3.5 && h <= 4.5) {
-                console.warn(`🟡 REVIEW QUEUE (Suspicious Token h=${h.toFixed(2)}): ${token}`);
-                suspiciousTokens.push({ token, entropy: parseFloat(h.toFixed(2)), email_id: e.id });
-              }
-            }
-            // Luhn-validated credit cards only
-            if (/^[0-9\-]{13,19}$/.test(token) && luhnValid(token)) return "credit-card";
-            return undefined;
-          });
-        },
-        replace: (entity: string) => {
-          const normalized = entity
-            .replace("credit-card-number", "CREDIT-CARD")
-            .replace("credit-card", "CREDIT-CARD")
-            .toUpperCase();
-          return "[ERASED_" + normalized + "]";
-        }
-      };
-
-      let stage2 = stage1;
-      try {
-        const arcjetRes: any = await redact(stage1, arcjetConfig);
-        stage2 = Array.isArray(arcjetRes) ? arcjetRes[0] : (arcjetRes.redacted || stage1);
-      } catch (err) {
-        console.error("Arcjet Redact Err", err);
-      }
-
-      // ── PERSISTENT REVIEW QUEUE FLUSH (fire-and-forget) ──
-      // NOT awaited — debug_logs is observational only. No reason to block the critical path.
-      // Writes suspicious tokens to DB so they survive past the 24-hour Edge Function log window.
-      if (suspiciousTokens.length > 0) {
-        supabaseAdmin.from("debug_logs").insert(
-          suspiciousTokens.map(t => ({
-            user_id: userId,
-            event: "REVIEW_QUEUE_TOKEN",
-            data: { token: t.token, entropy: t.entropy, email_id: t.email_id }
-          }))
-        ).catch((err: any) => console.error("[REVIEW QUEUE] Persist failed:", err));
-
-      }
-
-      // STAGE 3: Rehydration Layer — temporary PII masking for LLM round-trip
-      const piiConfig = {
-        entities: ["email", "phone-number", "ip-address"],
-        replace: (entity: string) => `__PII_${entity.replace(/-/g, '')}_${Math.random().toString(36).substring(2, 9)}__`
-      };
-
-      let piiRedacted = stage2;
-      let unredactFn: any = null;
-      try {
-        const piiRes: any = await redact(stage2, piiConfig);
-        piiRedacted = Array.isArray(piiRes) ? piiRes[0] : (piiRes.redacted || stage2);
-        unredactFn = Array.isArray(piiRes) ? piiRes[1] : piiRes.unredact;
-      } catch (err) {
-        console.error("PII Rehydration Err", err);
-      }
-
-      safeEmails.push(`[EMAIL_ID: ${e.id}]\n${piiRedacted}`);
-      if (typeof unredactFn === 'function') {
-        unredactFunctions.push(unredactFn);
-      }
-
-    } catch (err) {
-      console.error("PII Filter failed for email:", e.id, err);
-      safeEmails.push(`[EMAIL_ID: ${e.id}]\n[EMAIL REDACTED DUE TO PRIVACY SHIELD FAILURE]`);
-    }
-  }
-
-  const batchedText = safeEmails.join("\n\n---\n\n");
-  console.log("🔒 SHIELDED BATCH:", batchedText);
-
-  const pendingContext = pendingTasksContext
-    ? `\n\nUSER'S CURRENT PENDING TASKS (for update detection):\n${pendingTasksContext}\n\nIMPORTANT: If an email is an UPDATE to an existing task (e.g.,"deadline extended","event rescheduled"), return { "is_update": true, "existing_task_id": "[TASK_ID]", "deadline": "new ISO date" } instead.`
-    : "";
-
-  // STAGE 1 CORE: No user_profile, no categories. Universal extraction only.
-  const prompt = `Time: ${nowIst}.
-Extract actionable tasks from these emails. Return ONLY a valid JSON array.
-Each task MUST include the exact source_email_id from [EMAIL_ID: xxx].
-Rules:
-- If an email has a required action, deadline, or meeting → extract it. Do NOT judge relevance.
-- If an email has zero actionable content (receipt, promotional banner with no deadline) → omit it entirely.
-- If an email is informational or low priority but has some relevance → extract it with category "Check_Out_Mail".
-${pendingContext}
-${actionContext}
-
-Format: New task: { "title": "...", "deadline": "ISO8601 or null", "summary": "...", "source_email_id": "xxx" }
-Update only: { "is_update": true, "existing_task_id": "uuid", "deadline": "ISO8601", "summary": "Updated: ...", "source_email_id": "xxx" }
-Check_Out_Mail: { "title": "...", "deadline": "ISO8601 or null", "summary": "...", "source_email_id": "xxx", "category": "Check_Out_Mail" }
-
-EMAILS:
-${batchedText}`;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-  let exRes: Response | null = null;
-  let attemptsLeft = 3;
-  while (attemptsLeft > 0 && !exRes) {
-    const key = getNextKey();
-    try {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: prompt }] }),
-        signal: controller.signal
-      });
-      if (res.status === 429) { attemptsLeft--; await sleep(500); continue; }
-      exRes = res;
-    } catch { attemptsLeft--; }
-  }
-  clearTimeout(timeoutId);
-
-  if (!exRes) return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit: true };
-
-  if (!exRes.ok) {
-    console.error(`[LLM API Error] Status: ${exRes.status}`);
-    return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit: exRes.status === 429 };
-  }
-
-  const exData = await exRes.json();
-  let rawContent = exData.choices?.[0]?.message?.content || "";
-
-  // ── RE-HYDRATION MODULE ──
-  for (const unredactFn of unredactFunctions) {
-    try {
-      rawContent = unredactFn(rawContent);
-    } catch (e) { /* ignore unredact failures if a token was mangled by LLM */ }
-  }
-
-  const parsed = lenientParseArray(rawContent);
-
-  if (parsed) {
-    const rawTasks = parsed.filter((t: any) => {
-      const sourceId = t.source_email_id;
-      // Validate source_email_id is a non-empty string and not "None" or similar invalid values
-      if (!sourceId || typeof sourceId !== 'string' || sourceId.trim() === '' || sourceId.toLowerCase() === 'none') {
-        return false;
-      }
-      const cleanId = sourceId.trim();
-      return emailsToProcess.some(e => cleanId === e.id);
-    });
-    return { rawTasks, successfullyProcessedIds: emailsToProcess.map(e => e.id), rateLimitHit: false };
-  }
-
-  // If the LLM returned absolutely nothing valid, we assume no tasks were found.
-  return { rawTasks: [], successfullyProcessedIds: emailsToProcess.map(e => e.id), rateLimitHit: false };
-};
-
-// ═══════════════════════════════════════════════════════════════
-// STAGE 2: PERSONA EVOLUTION (Task-Driven, not Email-Driven)
-// Feeds pure task titles into Key C. Preserves core identity.
-// ═══════════════════════════════════════════════════════════════
-const evolvePersonaFromTasks = async (
-  rawTasks: any[],
-  currentProfile: string,
-  currentCategories: string[],
-  supabaseAdmin: any,
-  settingsId: string,
-  userId: string
-): Promise<{ updatedProfile: string; updatedCategories: string[] }> => {
-  if (rawTasks.length === 0) return { updatedProfile: currentProfile, updatedCategories: currentCategories };
-
-  // Calculate temporal context
-  const now = new Date();
-  const month = now.toLocaleString('default', { month: 'long' });
-  const season = getSeason(now.getMonth());
-  const quarter = `Q${Math.floor(now.getMonth() / 3) + 1}`;
-
-  const taskSample = rawTasks.map(t => `- "${t.title || t.summary || "Untitled"}" (Deadline: ${t.deadline || "none"})`).join("\n");
-
-  const personaPrompt = `Here is the user's historical context:
- "${currentProfile}"
- Current Categories: [${currentCategories.join(", ")}]
- Current Temporal Context: ${month}, ${season} (${quarter})
- 
- Newly extracted tasks:
- ${taskSample}
- 
- Based on these NEW TASKS, EVOLVE their context.
- 1. Add new habits/patterns you discover.
- 2. Gracefully retire completely outdated tasks or projects.
- 3. CRITICAL LIMIT: DO NOT change the user's fundamental profession/identity (e.g., if they are a College Student, do not make them a Software Engineer).
- 4. DYNAMICALLY create meaningful, highly-personalized categories that represent the user's active life blocks, courses, or long-term projects.
-    - CLUSTER similar tasks together. DO NOT create a separate category for every single task. 
-    - A category should be specific to their context but capable of holding multiple tasks (e.g., "Equinox Hackathon Prep", "AWS Cloud Coursework", "Campus Placements").
-    - Do NOT use the exact task title as the category name. Generalize it into an ongoing theme or project bucket.
- 
- JSON ONLY format:
- { "user_profile": "...", "categories": ["Equinox Hackathon", "Cloud Coursework", "Personal Leisure", "..."] }`;
-
+function fireAndForget(promise: Promise<any>) {
   try {
-    const pRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${getPersonaKey()}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: personaPrompt }] })
-    });
-    const pData = await pRes.json();
-    const match = (pData.choices?.[0]?.message?.content || "").match(/\{[\s\S]*\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]);
-      const updatedProfile = parsed.user_profile || currentProfile;
-      const updatedCategories = parsed.categories || currentCategories;
-      await supabaseAdmin.from("user_settings").update({ user_profile: updatedProfile, categories: updatedCategories }).eq("id", settingsId);
-      await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "PERSONA_EVOLVED", data: { profile: updatedProfile, categories: updatedCategories } });
-      return { updatedProfile, updatedCategories };
+    // @ts-ignore: EdgeRuntime is a Supabase-specific global
+    if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+      EdgeRuntime.waitUntil(promise);
     }
-  } catch (e: any) {
-    await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "PERSONA_ERR", data: { error: e.message } });
+  } catch {
+    // Fallback: let the promise run without tracking
+    promise.catch(err => console.error("[BG Task Error]", err));
   }
-  return { updatedProfile: currentProfile, updatedCategories: currentCategories };
-};
+}
 
-// ═══════════════════════════════════════════════════════════════
-// STAGE 3: PERSONA-AWARE CATEGORIZATION (The Lens)
-// Applies freshly evolved profile to assign categories.
-// ═══════════════════════════════════════════════════════════════
-const categorizeTasks = async (
-  rawTasks: any[],
-  updatedProfile: string,
-  updatedCategories: string[],
-  recentActions: string[],
-  emailsToProcess: any[],
-  supabaseAdmin: any,
-  userId: string,
-  settingsId: string,
-  nowIst: string
-): Promise<{ finalTasks: any[]; updatedTaskIds: string[]; currentCategories: string[] }> => {
-  const finalTasks: any[] = [];
-  const updatedTaskIds: string[] = [];
-  let currentCategories = [...updatedCategories];
-
-  const tasksToCategorize = rawTasks.filter(t => !t.is_update && t.category !== "Check_Out_Mail");
-  let categoryMapping: Record<string, string> = {};
-
-  if (tasksToCategorize.length > 0) {
-    const catPrompt = `User Profile: "${updatedProfile}"
- Existing Dynamic Categories: [${currentCategories.join(", ")}]
- 
- Tasks to classify:
- ${tasksToCategorize.map(t => `- "${t.title}"`).join("\n")}
- 
- Rules:
- - Map every task to the single most fitting existing category from the list above.
- - If a task genuinely does not belong in any existing category, you MUST introduce a new, meaningful semantic cluster for it.
- - A new category must be an ongoing project, theme, or context (e.g., "React Native Workshop", "Job Hunting", "Final Exams").
- - DO NOT use the exact task title as the category name. Generalize it slightly so future related tasks can share the bubble.
- - Provide a confidence score (0.0 to 1.0) for each mapping indicating your certainty.
- 
-     JSON ONLY format: [ { "task": "Task Title", "category": "ExactCategoryName", "confidence": 0.95 } ]`;
-    try {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${getPersonaKey()}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: catPrompt }] })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        let content = data.choices?.[0]?.message?.content || "";
-
-        // Strip markdown JSON backticks safely to prevent parse failures
-        content = content.replace(/```json/g, "").replace(/```/g, "").trim();
-
-        const match = content.match(/\[[\s\S]*\]/);
-        if (match) {
-          const categoryArray = JSON.parse(match[0]);
-          // Convert array format to mapping for backward compatibility
-          categoryArray.forEach((item: any) => {
-            if (item.task && item.category && item.confidence !== undefined) {
-              // Apply confidence threshold: only accept mappings with confidence >= 0.6
-              if (item.confidence >= 0.6) {
-                categoryMapping[item.task] = item.category;
-              } else {
-                // Low confidence mappings are rejected and will fall back to default
-                console.log(`[STAGE 3] Low confidence rejection: "${item.task}" -> "${item.category}" (confidence: ${item.confidence})`);
-              }
-            }
-          });
-        }
-      }
-    } catch (e) {
-      console.error("Stage 3 API err", e);
-    }
-  }
-
-  for (const t of rawTasks) {
-    const sourceId = t.source_email_id;
-    // Validate source_email_id is a non-empty string and not "None" or similar invalid values
-    if (!sourceId || typeof sourceId !== 'string' || sourceId.trim() === '' || sourceId.toLowerCase() === 'none') {
-      continue; // Skip invalid source_email_id
-    }
-    const cleanId = sourceId.trim();
-    const originalEmail = emailsToProcess.find(e => cleanId === e.id);
-    if (!originalEmail) continue;
-
-    // Handle UPDATE detection (carried from Stage 1)
-    if (t.is_update && t.existing_task_id) {
-      await supabaseAdmin.from("tasks").update({ deadline: t.deadline || null, summary: t.summary || "Updated via email." })
-        .eq("id", t.existing_task_id).eq("user_id", userId);
-      updatedTaskIds.push(t.existing_task_id);
-      await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "TASK_UPDATED", data: { task_id: t.existing_task_id, new_deadline: t.deadline } });
-      continue;
-    }
-
-    // Category pinned at Check_Out_Mail from Stage 1 → keep it
-    if (t.category === "Check_Out_Mail") {
-      finalTasks.push({ ...t, user_id: userId, source_email_id: originalEmail.id });
-      continue;
-    }
-
-    // Behavioral Telemetry: route recent deletes to Check_Out_Mail
-    const isDeleteMatch = recentActions.some(action =>
-      action.startsWith("Deleted") && t.title && action.toLowerCase().includes(t.title.toLowerCase().slice(0, 15))
-    );
-    if (isDeleteMatch) {
-      finalTasks.push({ ...t, category: "Check_Out_Mail", user_id: userId, source_email_id: originalEmail.id });
-      continue;
-    }
-
-    // Apply strict AI mapping — allow new dynamic functional categories from the LLM
-    let normalizedCat = categoryMapping[t.title];
-    if (!normalizedCat) {
-      // Task had no mapping or was filtered out due to low confidence (< 0.6)
-      // Route to Check_Out_Mail to prevent hallucinations
-      normalizedCat = "Check_Out_Mail";
-    } else if (!currentCategories.includes(normalizedCat)) {
-      // A new category was proposed by Stage 3
-      // We accept it, but do a quick sanity check to make sure it's not a hallucination or an entire block of text
-      const isMeaningful = normalizedCat.length > 2 && normalizedCat.length < 50 && normalizedCat === normalizedCat.trim();
-      if (isMeaningful) {
-        currentCategories.push(normalizedCat);
-        await supabaseAdmin.from("user_settings").update({ categories: currentCategories }).eq("id", settingsId);
-        console.log(`[STAGE 3] New semantic cluster added: "${normalizedCat}"`);
-      } else {
-        // Invalid category proposal, fall back to Check_Out_Mail for safety
-        normalizedCat = "Check_Out_Mail";
-      }
-    }
-
-    finalTasks.push({ ...t, category: normalizedCat, user_id: userId, source_email_id: originalEmail.id });
-  }
-
-  await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "TASK_CATEGORIZED", data: { count: finalTasks.length } });
-  return { finalTasks, updatedTaskIds, currentCategories };
-};
-
-// ═══════════════════════════════════════════════════════════════
-// WARNING ENGINE: Computes deadline badges post-upsert
-// ═══════════════════════════════════════════════════════════════
-const runWarningEngine = async (supabaseAdmin: any, userId: string, finalTasks: any[], updatedTaskIds: string[]) => {
-  if (finalTasks.length === 0 && updatedTaskIds.length === 0) return;
-
-  const { data: allActive } = await supabaseAdmin.from("tasks")
-    .select("id, deadline, warnings").eq("user_id", userId).eq("status", "pending");
-  if (!allActive || allActive.length === 0) return;
-
-  const now = new Date();
-  const tomorrowIso = new Date(now.getTime() + 86400000).toISOString().split("T")[0];
-  const dateCounts: Record<string, number> = {};
-  let weekCount = 0;
-
-  for (const t of allActive) {
-    if (!t.deadline) continue;
-    const dStr = t.deadline.split("T")[0];
-    dateCounts[dStr] = (dateCounts[dStr] || 0) + 1;
-    const diff = (new Date(t.deadline).getTime() - now.getTime()) / 86400000;
-    if (diff >= 0 && diff <= 7) weekCount++;
-  }
-
-  const warningUpdates: { id: string; warnings: string[] }[] = [];
-  for (const t of allActive) {
-    const w: string[] = [];
-    if (t.deadline) {
-      const dStr = t.deadline.split("T")[0];
-      if (dStr === tomorrowIso) w.push("⚠️ Due tomorrow");
-      if (dateCounts[dStr] > 1) w.push("⚠️ Multiple tasks on this day");
-      const diff = (new Date(t.deadline).getTime() - now.getTime()) / 86400000;
-      if (weekCount >= 3 && diff >= 0 && diff <= 7) w.push("⚠️ 3+ deadlines this week");
-    }
-    if (JSON.stringify(w) !== JSON.stringify(t.warnings || [])) warningUpdates.push({ id: t.id, warnings: w });
-  }
-
-  // Sequential updates — protects free-tier connection pool
-  for (const update of warningUpdates)
-    await supabaseAdmin.from("tasks").update({ warnings: update.warnings }).eq("id", update.id);
-};
-
-// ─────────────────────────────────────────────
-// AUTO-HEALING OAUTH PIPELINE
-// ─────────────────────────────────────────────
-async function refreshGmailToken(userId: string, refreshToken: string, supabaseAdmin: any): Promise<string | null> {
-  const clientId = Deno.env.get("GOOGLE_CLIENT_ID");
-  const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET");
-  if (!clientId || !clientSecret) {
-    console.error(`[OAUTH] CRITICAL ERROR: Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in Edge limits!`);
-    return null;
-  }
-
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token"
-    }),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    console.warn("[OAUTH] Refresh failed:", data);
-    if (data.error === "invalid_grant") {
-      // Graceful Revocation: They uninstalled or revoked the app
-      await supabaseAdmin.from("user_settings").update({ sync_status: 'REVOKED' }).eq("user_id", userId);
-      await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "GMAIL_AUTH_REVOKED", data: {} });
-    }
-    return null;
-  }
-
-  // Atomic Persistence
-  const newGmailTokenObj = { token: data.access_token, refresh_token: refreshToken };
-  await supabaseAdmin.from("user_settings")
-    .update({ gmail_token: newGmailTokenObj, sync_status: 'ACTIVE' })
-    .eq("user_id", userId);
-
-  await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "GMAIL_TOKEN_REFRESHED", data: {} });
-  return data.access_token;
+// Non-blocking debug_logs helper — fire-and-forget via EdgeRuntime.waitUntil
+function asyncLog(supabaseAdmin: any, userId: string, event: string, data: any) {
+  const promise = supabaseAdmin.from("debug_logs").insert({ user_id: userId, event, data })
+    .then(() => {})
+    .catch((err: any) => console.error(`[ASYNC LOG] ${event} failed:`, err.message));
+  fireAndForget(promise);
 }
 
 // ─────────────────────────────────────────────
@@ -615,11 +34,15 @@ async function refreshGmailToken(userId: string, refreshToken: string, supabaseA
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
+  // Declare at top-level for error handler access
+  let settings: any = null;
+  let supabaseAdmin: any = null;
+
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) return new Response(JSON.stringify({ error: "Missing Auth" }), { status: 401, headers: corsHeaders });
 
-    const supabaseAdmin = createClient(
+    supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
@@ -628,7 +51,6 @@ Deno.serve(async (req: Request) => {
     let reqBody: any = {};
     try { reqBody = await req.json(); } catch { }
     let tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
     // Check if this is a service role key (used by background_worker)
     // Service keys are JWTs with role="service_role" in the payload
@@ -663,7 +85,9 @@ Deno.serve(async (req: Request) => {
 
     if (!user) return new Response(JSON.stringify({ error: "Unauthorized (JWT Decode Failed)" }), { status: 401, headers: corsHeaders });
 
-    let { data: settings } = await supabaseAdmin.from("user_settings").select("*").eq("user_id", user.id).single();
+    let { data: settingsData } = await supabaseAdmin.from("user_settings").select("*").eq("user_id", user.id).single();
+    settings = settingsData;
+
     if (settings?.sync_status === 'REVOKED') {
       console.log(`[OAUTH] User ${user.id} has revoked access. Bypassing engine.`);
       return new Response(JSON.stringify({ message: "Sync Revoked" }), { status: 200, headers: corsHeaders });
@@ -687,7 +111,7 @@ Deno.serve(async (req: Request) => {
       if (insertError) throw new Error("Failed to bootstrap user settings: " + insertError.message);
       settings = inserted;
 
-      await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "USER_BOOTSTRAPPED", data: {} });
+      asyncLog(supabaseAdmin, user.id, "USER_BOOTSTRAPPED", {});
 
       // Register Gmail Webhook Watch
       try {
@@ -698,7 +122,7 @@ Deno.serve(async (req: Request) => {
       } catch (e: any) { console.warn("Gmail watch error:", e.message); }
     }
 
-    await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "V16_SYNC_START", data: {} });
+    asyncLog(supabaseAdmin, user.id, "V21_SYNC_START", {});
 
     const isNewUser = !settings.last_synced_at || settings.user_profile?.includes("Initial Sync Stage");
     let gmailToken = settings.gmail_token?.token;
@@ -715,15 +139,13 @@ Deno.serve(async (req: Request) => {
     const isSyncInProgress: boolean = (settings as any).sync_in_progress === true && lockAge < LOCK_TTL_MS;
 
     if (isSyncInProgress) {
-      await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCKED", data: { reason: "Another sync already in progress", lock_age_ms: lockAge } });
+      asyncLog(supabaseAdmin, user.id, "SYNC_LOCKED", { reason: "Another sync already in progress", lock_age_ms: lockAge });
       return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 0, locked: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
     // ── ATOMIC LOCK ACQUISITION ──
-    // If the lock is stale (sync_in_progress=true but lock >2 min old), force-break it.
-    // Otherwise, use conditional UPDATE to prevent race conditions between concurrent syncs.
     let lockAcquired: any[] = [];
     const isStaleLock = (settings as any).sync_in_progress === true && lockAge >= LOCK_TTL_MS;
 
@@ -735,7 +157,7 @@ Deno.serve(async (req: Request) => {
         .eq("id", settings.id)
         .select("id");
       lockAcquired = data || [];
-      await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCK_BROKEN", data: { reason: "Stale lock auto-healed", lock_age_ms: lockAge } });
+      asyncLog(supabaseAdmin, user.id, "SYNC_LOCK_BROKEN", { reason: "Stale lock auto-healed", lock_age_ms: lockAge });
     } else {
       // Normal case: conditional UPDATE prevents concurrent race
       const { data } = await supabaseAdmin
@@ -748,14 +170,14 @@ Deno.serve(async (req: Request) => {
     }
 
     if (!lockAcquired || lockAcquired.length === 0) {
-      await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "SYNC_LOCKED", data: { reason: "Atomic lock acquisition failed — concurrent sync won the race" } });
+      asyncLog(supabaseAdmin, user.id, "SYNC_LOCKED", { reason: "Atomic lock acquisition failed — concurrent sync won the race" });
       return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 0, locked: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
     // ── GMAIL FETCH WITH PAGINATION SUPPORT ──
-    const maxResults = 25; // Safe batch size
+    const maxResults = 25; // Optimal batch size for 120 RPM (4 keys × 30 RPM)
     const storedPageToken: string | null = (settings as any).sync_page_token || null;
     const lastSynced = settings.last_synced_at;
     let query = "";
@@ -787,7 +209,7 @@ Deno.serve(async (req: Request) => {
     const messages = listData.messages || [];
     const nextPageToken: string | null = listData.nextPageToken || null;
 
-    await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "GMAIL_FETCH", data: { count: messages.length, page_token: storedPageToken, next_page_token: nextPageToken } });
+    asyncLog(supabaseAdmin, user.id, "GMAIL_FETCH", { count: messages.length, page_token: storedPageToken, next_page_token: nextPageToken });
 
     const emails = (await Promise.all(messages.map(async (m: any) => {
       try {
@@ -866,45 +288,43 @@ Deno.serve(async (req: Request) => {
 
     const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
 
-    // ──────── SINGLE PASS ARCHITECTURE (Distributed Path) ────────
-    // STAGE 1: Universal Extraction
+    // ══════════════════════════════════════════════════════════════
+    // CONCURRENT MATRIX ARCHITECTURE
+    // ══════════════════════════════════════════════════════════════
+
+    // STAGE 1: Universal Extraction (must complete before categorization)
     const { rawTasks, successfullyProcessedIds: batchIds, rateLimitHit } = await extractRawTasks(
       unprocessedEmails.slice(0, 15), pendingTasksContext, actionContext, nowIst, supabaseAdmin, user.id
     );
 
     if (rateLimitHit && batchIds.length === 0) {
       // Release lock and bailout on rate limit
-      await supabaseAdmin.from("user_settings").update({ sync_in_progress: false, sync_lock_at: null }).eq("id", settings.id);
+      await supabaseAdmin.from("user_settings").update({ 
+        sync_in_progress: false, 
+        sync_lock_at: null,
+        last_sync_error: "⚠️ AI Sync paused due to high demand. Retrying in 60s..."
+      }).eq("id", settings.id);
       return new Response(JSON.stringify({ error: "Rate Limit" }), { status: 429, headers: corsHeaders });
     }
 
-    // STAGE 2: Persona Evolution
+    // ── THE CONCURRENT SPLIT ──
+    // Stage 2 (Persona Evolution) runs in the BACKGROUND via EdgeRuntime.waitUntil.
+    // Stage 3 (Categorization) runs on the CURRENT profile immediately.
+    // Result: We remove an entire LLM roundtrip from the critical path!
     const shouldEvolve = (isNewUser || unprocessedEmails.length > 20) && rawTasks.length > 0;
-    const { updatedProfile, updatedCategories } = shouldEvolve
-      ? await evolvePersonaFromTasks(rawTasks, currentProfile, currentCategories, supabaseAdmin, settings.id, user.id)
-      : { updatedProfile: currentProfile, updatedCategories: currentCategories };
+    if (shouldEvolve) {
+      fireAndForget(
+        evolvePersonaFromTasks(rawTasks, currentProfile, currentCategories, supabaseAdmin, settings.id, user.id)
+      );
+    }
 
-    // STAGE 3: Persona-Aware Categorization
+    // STAGE 3: Persona-Aware Categorization (uses current profile, doesn't wait for evolution)
     const { finalTasks, updatedTaskIds } = await categorizeTasks(
-      rawTasks, updatedProfile, updatedCategories, recentActions,
+      rawTasks, currentProfile, currentCategories, recentActions,
       unprocessedEmails.slice(0, 15), supabaseAdmin, user.id, settings.id, nowIst
     );
 
-    // Welcome task for new users
-    if (isNewUser && finalTasks.length === 0 && unprocessedEmails.length <= 15) {
-      finalTasks.push({
-        title: "🚀 Welcome to Tasker AI!",
-        summary: "I've analyzed your emails and built your personalized task categories!",
-        category: "Onboarding", status: "pending",
-        user_id: user.id, source_email_id: "onboarding_" + Date.now()
-      });
-    }
-
     // Persist ghost tasks for emails that produced no actionable tasks
-    // `unprocessedEmails.slice(0, 15)` contains the batch we just processed.
-    // `finalTasks` holds all tasks that will be upserted (including any from rawTasks).
-    // Any email ID in the batch that does NOT appear in `finalTasks` should be recorded as a ghost task
-    // so the dedup engine knows it was processed.
     const batchEmails = unprocessedEmails.slice(0, 15);
     const processedEmailIds = new Set(finalTasks.map(t => t.source_email_id));
     const ghostTasks = batchEmails
@@ -916,8 +336,19 @@ Deno.serve(async (req: Request) => {
         status: "ignored",
         user_id: user.id,
         source_email_id: e.id,
-        // Minimal fields required by schema; other optional fields left undefined
       }));
+
+    // Welcome task for new users
+    if (isNewUser && finalTasks.length === 0 && unprocessedEmails.length <= 15) {
+      finalTasks.push({
+        title: "🚀 Welcome to Tasker AI!",
+        summary: ghostTasks.length > 0 
+          ? `I've analyzed your first ${batchEmails.length} emails. Good news: ${ghostTasks.length} promotional/spam emails were cleanly filtered out with zero clutter added to your list! I've also built your personalized task categories.`
+          : "I've analyzed your emails and built your personalized task categories!",
+        category: "Onboarding", status: "pending",
+        user_id: user.id, source_email_id: "onboarding_" + Date.now()
+      });
+    }
 
     // Combine ghost tasks with any real tasks before upsert
     const allTasksToUpsert = [...finalTasks, ...ghostTasks].map(t => ({
@@ -929,18 +360,18 @@ Deno.serve(async (req: Request) => {
       try {
         const { error: upsertError } = await supabaseAdmin.from("tasks").upsert(allTasksToUpsert, { onConflict: "source_email_id" });
         if (upsertError) {
-          await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "UPsert_ERROR", data: { error: upsertError.message, count: allTasksToUpsert.length } });
+          asyncLog(supabaseAdmin, user.id, "UPsert_ERROR", { error: upsertError.message, count: allTasksToUpsert.length });
           throw new Error("Failed to persist tasks: " + upsertError.message);
         }
         console.log(`[UPSERT] Success`);
       } catch (e: any) {
-        await supabaseAdmin.from("debug_logs").insert({ user_id: user.id, event: "UPsert_CRASH", data: { error: e.message } });
+        asyncLog(supabaseAdmin, user.id, "UPsert_CRASH", { error: e.message });
         throw e;
       }
     }
 
-    // Warning Engine
-    await runWarningEngine(supabaseAdmin, user.id, [], updatedTaskIds);
+    // Warning Engine — fire-and-forget via EdgeRuntime.waitUntil (pure DB I/O)
+    fireAndForget(runWarningEngine(supabaseAdmin, user.id, [], updatedTaskIds));
 
     const remainingCount = unprocessedEmails.length - batchIds.length;
     const isPageDone = remainingCount === 0;
@@ -952,7 +383,8 @@ Deno.serve(async (req: Request) => {
         sync_page_token: nextPageToken,
         last_synced_at: new Date().toISOString(),
         sync_in_progress: false,
-        sync_lock_at: null
+        sync_lock_at: null,
+        last_sync_error: null
       }).eq("id", settings.id);
       
       // Trigger Background Catchup
@@ -963,6 +395,7 @@ Deno.serve(async (req: Request) => {
         sync_page_token: null,
         sync_in_progress: false,
         sync_lock_at: null,
+        last_sync_error: null,
         recent_actions: []
       }).eq("id", settings.id);
     } else {
@@ -970,7 +403,8 @@ Deno.serve(async (req: Request) => {
       await supabaseAdmin.from("user_settings").update({
         sync_in_progress: false,
         sync_lock_at: null,
-        last_synced_at: new Date().toISOString()
+        last_synced_at: new Date().toISOString(),
+        last_sync_error: null
       }).eq("id", settings.id);
       
       // If we still have emails in this page, trigger background worker to pick up the slack
@@ -982,11 +416,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    await supabaseAdmin.from("debug_logs").insert({
-      user_id: user.id,
-      event: "V20_RESTORED_COMPLETE",
-      data: { tasks: finalTasks.length, processed: batchIds.length, remaining: remainingCount }
-    });
+    asyncLog(supabaseAdmin, user.id, "V21_MODULAR_COMPLETE", { tasks: finalTasks.length, processed: batchIds.length, remaining: remainingCount });
 
     return new Response(JSON.stringify({
       success: true,
@@ -1003,7 +433,8 @@ Deno.serve(async (req: Request) => {
       if (settings?.id) {
         await supabaseAdmin.from("user_settings").update({
           sync_in_progress: false,
-          sync_lock_at: null
+          sync_lock_at: null,
+          last_sync_error: `❌ Sync error: ${err.message}`
         }).eq("id", settings.id);
       }
     } catch (_) { /* best-effort */ }

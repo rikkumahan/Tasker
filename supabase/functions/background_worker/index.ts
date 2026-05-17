@@ -1,24 +1,23 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sleep } from "../_shared/utils.ts";
 
 /**
- * background_worker/index.ts — v2 (Greedy Native Queue Drain)
+ * background_worker/index.ts — v3 (Modular + Optimized Pacing)
  *
  * LAYER 3: The Background Worker
  * Triggered reactively by webhook_ingest (or the 10-min fail-safe cron).
  * Drains the sync_queue in a Greedy Loop until empty, then exits.
  *
- * - Processes one user-batch per iteration (respects 180 RPM via 333ms sleep)
+ * - Processes one user-batch per iteration (respects 120 RPM via natural sync pacing)
  * - Uses claim_next_job() for concurrency-safe multi-worker safety
  * - Re-queues catchup syncs if sync reports remaining emails
  * - Exponential backoff on failure (10s, 20s, 40s → fail after 3 strikes)
  */
 
 const MAX_RUN_MS = 120_000; // 2 min safety limit (Supabase free tier: 150s)
-const PACE_MS = 200;        // 300 RPM = 1 request per 200ms (5 keys)
-
-async function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// 4 keys × 30 RPM = 120 RPM pool. Each sync call takes ~8s (natural pacing).
+// PACE_MS is a minimum gap between iterations — sync's wall-clock time provides the real throttle.
+const PACE_MS = 100;
 
 Deno.serve(async (req: Request) => {
   // Draining the queue is completely safe to trigger externally since it requires zero parameters and only executes authenticated queue rows natively.
@@ -96,6 +95,10 @@ Deno.serve(async (req: Request) => {
           error_message: err.message
         }).eq("id", job.id);
 
+        await supabaseAdmin.from("user_settings").update({
+          last_sync_error: `❌ Background sync failed after 3 attempts: ${err.message}`
+        }).eq("user_id", job.user_id);
+
         await supabaseAdmin.from("debug_logs").insert({
           user_id: job.user_id,
           event: "WORKER_FAILED",
@@ -112,7 +115,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Pace to 180 RPM (3 keys × 60 RPM = 1 call per 333ms)
+    // Minimum gap between iterations — sync's ~8s wall-clock provides natural throttle
     await sleep(PACE_MS);
   }
 
