@@ -338,8 +338,8 @@ Deno.serve(async (req: Request) => {
         source_email_id: e.id,
       }));
 
-    // Welcome task for new users
-    if (isNewUser && finalTasks.length === 0 && unprocessedEmails.length <= 15) {
+    // Welcome task for new users — check batch size, not total unprocessed
+    if (isNewUser && finalTasks.length === 0 && batchEmails.length <= 15) {
       finalTasks.push({
         title: "🚀 Welcome to Tasker AI!",
         summary: ghostTasks.length > 0 
