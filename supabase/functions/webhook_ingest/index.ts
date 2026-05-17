@@ -23,8 +23,13 @@ Deno.serve(async (req: Request) => {
     const messageData = body?.message?.data;
     if (!messageData) return new Response("ok", { status: 200 });
 
-    // Decode Pub/Sub payload
-    const decoded = atob(messageData.replace(/-/g, "+").replace(/_/g, "/"));
+    // Decode Pub/Sub payload (with required base64 padding for atob)
+    let base64 = messageData.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = base64.length % 4;
+    if (pad) {
+      base64 += "=".repeat(4 - pad);
+    }
+    const decoded = atob(base64);
     const notification = JSON.parse(decoded);
 
     // Gmail sends: { emailAddress: "user@gmail.com", historyId: "12345" }

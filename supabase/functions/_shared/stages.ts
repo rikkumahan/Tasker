@@ -257,11 +257,13 @@ export const evolvePersonaFromTasks = async (
       const updatedProfile = parsed.user_profile || currentProfile;
       const evolvedCategories = parsed.categories || currentCategories;
 
-      // BUG FIX #4: Merge with current DB state instead of blind overwrite.
-      // Stage 3 may have added new categories while we were running in the background.
+      // BUG FIX #4b: Merge intelligently to allow category retirement.
+      // We keep what the LLM returned (evolvedCategories), PLUS anything new that 
+      // Stage 3 added to the DB while we were running (recentlyAdded).
       const { data: freshSettings } = await supabaseAdmin.from("user_settings").select("categories").eq("id", settingsId).single();
       const existingDbCategories: string[] = freshSettings?.categories || [];
-      const mergedCategories = Array.from(new Set([...existingDbCategories, ...evolvedCategories]));
+      const recentlyAdded = existingDbCategories.filter(c => !currentCategories.includes(c));
+      const mergedCategories = Array.from(new Set([...evolvedCategories, ...recentlyAdded]));
 
       await supabaseAdmin.from("user_settings").update({ user_profile: updatedProfile, categories: mergedCategories }).eq("id", settingsId);
       await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "PERSONA_EVOLVED", data: { profile: updatedProfile, categories: mergedCategories } });
