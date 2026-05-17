@@ -149,11 +149,11 @@ Extract actionable tasks and useful information from these emails. Return ONLY a
 Each task MUST include the exact source_email_id from [EMAIL_ID: xxx].
 ${userProfileContext}${customRulesContext}
 Rules:
-- Extract ANY email that contains personal importance, meetings, subscriptions, bills, news, updates, or anything useful. Do NOT judge relevance.
-- If an email is 100% spam or pure promotional junk -> omit it entirely.
-- If an email is informational, news, or a general update with no strict deadline -> extract it with category "Check_Out_Mail".
+- Extract ANY email that contains personal importance, meetings, subscriptions, bills, useful news, or updates. Do NOT judge relevance.
+- 🚫 OMIT ENTIRELY: OTPs, verification codes, 2FA, pure promotional junk, and useless spam. Do NOT create tasks for these.
 - If it has a specific action, deadline, or meeting -> extract it normally.
-- If the user's extraction overrides specify tracking a specific sender or topic, ALWAYS extract those emails regardless of other rules.
+- If an email is informational or news (but NOT spam) -> extract it normally. Do NOT force it into Check_Out_Mail. The categorizer will create a dynamic category for it (e.g., "Newsletters", "Updates").
+- If the user's extraction overrides specify tracking a specific sender or topic, ALWAYS extract those.
 - CRITICAL: You MUST include the exact "source_email_id" field for every single item you extract.
 ${pendingContext}
 ${actionContext}

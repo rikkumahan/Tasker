@@ -125,6 +125,12 @@ Deno.serve(async (req: Request) => {
       } catch (e: any) { console.warn("Gmail watch error:", e.message); }
     }
 
+    if (reqBody.bootstrap_only) {
+      return new Response(JSON.stringify({ success: true, message: "Bootstrapped successfully. Awaiting onboarding completion." }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
     asyncLog(supabaseAdmin, user.id, "V21_SYNC_START", {});
 
     const isNewUser = !settings.last_synced_at || settings.user_profile?.includes("Initial Sync Stage");

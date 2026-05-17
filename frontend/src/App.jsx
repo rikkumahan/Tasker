@@ -119,7 +119,7 @@ export default function App() {
       if (newSession) {
         // BUG FIX 3: Only onboard on true first-time SIGNED_IN, not on session restores.
         if (_event === 'SIGNED_IN' && newSession.provider_token) {
-          handleOnboarding(newSession);
+          bootstrapUser(newSession);
         } else {
           fetchTasks(newSession);
           checkSyncHealth(newSession);
@@ -226,26 +226,25 @@ export default function App() {
     }
   };
 
-  const handleOnboarding = async (sess) => {
+  const bootstrapUser = async (sess) => {
     if (onboardingTriggeredRef.current) {
-      console.log('[INFO] Onboarding already triggered, skipping duplicate call.');
+      console.log('[INFO] Bootstrapping already triggered, skipping duplicate call.');
       return;
     }
     onboardingTriggeredRef.current = true;
     setLoading(true);
     try {
-        console.log('[INFO] Bootstrapping new user via Unified Sync pipeline...');
+        console.log('[INFO] Bootstrapping new user settings and registering push (No task extraction yet)...');
         const providerToken = sess?.provider_token;
         const providerRefreshToken = sess?.provider_refresh_token;
         
-        // Connect directly to the progressive chunk loader instead of a separate onboard function
-        await triggerSync(sess, null, { providerToken, providerRefreshToken });
+        // Pass bootstrap_only flag to triggerSync
+        await triggerSync(sess, null, { providerToken, providerRefreshToken, bootstrap_only: true });
         
-        await fetchTasks(sess);
+        // Now that settings are created, check health to show the onboarding chat
+        await checkSyncHealth(sess);
     } catch (e) {
-        console.error("Onboarding error", e);
-        // Clear session so the user gets cleanly kicked out if onboarding fatally fails
-        // Or just leave them in loading state if preferred, but breaking the loop is key.
+        console.error("Bootstrap error", e);
     }
     setLoading(false);
   };
@@ -353,7 +352,7 @@ export default function App() {
         // Now trigger the actual first sync
         setShowOnboarding(false);
         setSynthesizing(false);
-        await handleOnboarding(sess);
+        await triggerSync(sess);
         await fetchTasks(sess);
       }
     } catch (e) {
@@ -365,7 +364,8 @@ export default function App() {
       setShowOnboarding(false);
       setSynthesizing(false);
       const sess = sessionRef.current;
-      await handleOnboarding(sess);
+      await triggerSync(sess);
+      await fetchTasks(sess);
     }
   };
 
@@ -542,8 +542,10 @@ export default function App() {
 
   return (
     <div className="app-container">
-      <header className="app-header">
-        <div className="header-info">
+      {!showOnboarding && (
+        <>
+          <header className="app-header">
+            <div className="header-info">
           <h1>My Tasks</h1>
           <p className="date-display">{format(new Date(), 'EEEE, MMMM do')}</p>
           {userSettings?.user_profile && (
