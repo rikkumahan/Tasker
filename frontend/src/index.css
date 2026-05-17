@@ -958,3 +958,27 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Thinking/typing bubble for onboarding */
+.thinking-bubble {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(139, 92, 246, 0.08) !important;
+  border: 1px dashed rgba(139, 92, 246, 0.3) !important;
+  align-self: flex-start;
+  padding: 0.55rem 0.95rem !important;
+  opacity: 0.85;
+}
+
+.pulse-dot {
+  font-size: 1.5rem;
+  color: #a78bfa;
+  line-height: 0.5;
+  animation: pulseOpacity 1.4s infinite ease-in-out;
+}
+
+@keyframes pulseOpacity {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 1; }
+}

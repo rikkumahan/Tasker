@@ -87,6 +87,7 @@ export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingChat, setOnboardingChat] = useState([]);
   const [onboardingInput, setOnboardingInput] = useState('');
+  const [onboardingChatLoading, setOnboardingChatLoading] = useState(false);
   const [synthesizing, setSynthesizing] = useState(false);
   const [synthesisStatus, setSynthesisStatus] = useState('');
   const onboardingChatRef = React.useRef(null);
@@ -309,7 +310,7 @@ export default function App() {
   // ── ONBOARDING DYNAMIC CHAT HANDLER ──
   const handleOnboardingSubmit = async () => {
     const input = onboardingInput.trim();
-    if (!input || synthesizing) return;
+    if (!input || onboardingChatLoading || synthesizing) return;
 
     setOnboardingInput('');
     const newUserMessage = { sender: 'user', text: input };
@@ -317,9 +318,7 @@ export default function App() {
     
     // Optimistically add user bubble
     setOnboardingChat(updatedChat);
-
-    setSynthesizing(true);
-    setSynthesisStatus('Analyzing input...');
+    setOnboardingChatLoading(true);
 
     try {
       const sess = sessionRef.current;
@@ -338,11 +337,14 @@ export default function App() {
       if (!finished) {
         // AI needs more information. Add response to chat and continue.
         setOnboardingChat(prev => [...prev, { sender: 'ai', text: ai_response }]);
-        setSynthesizing(false);
-        setSynthesisStatus('');
+        setOnboardingChatLoading(false);
       } else {
         // AI is satisfied! Finalize process.
         setOnboardingChat(prev => [...prev, { sender: 'ai', text: ai_response }]);
+        setOnboardingChatLoading(false);
+        
+        // Trigger full synthesis overlay
+        setSynthesizing(true);
         setSynthesisStatus('Calibrating extraction filters...');
         await new Promise(r => setTimeout(r, 1200));
         setSynthesisStatus('AI Mind initialized! ⚡');
@@ -356,6 +358,8 @@ export default function App() {
       }
     } catch (e) {
       console.error('Synthesis error:', e);
+      setOnboardingChatLoading(false);
+      setSynthesizing(true);
       setSynthesisStatus('Something went wrong. Proceeding with defaults...');
       await new Promise(r => setTimeout(r, 1500));
       setShowOnboarding(false);
@@ -401,7 +405,7 @@ export default function App() {
   // Auto-scroll chat areas
   React.useEffect(() => {
     if (onboardingChatRef.current) onboardingChatRef.current.scrollTop = onboardingChatRef.current.scrollHeight;
-  }, [onboardingChat]);
+  }, [onboardingChat, onboardingChatLoading]);
 
   React.useEffect(() => {
     if (mindChatRef.current) mindChatRef.current.scrollTop = mindChatRef.current.scrollHeight;
@@ -703,6 +707,13 @@ export default function App() {
               <>
                 <div className="onboarding-chat-area" ref={onboardingChatRef}>
                   {onboardingChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
+                  {onboardingChatLoading && (
+                    <div className="chat-bubble ai thinking-bubble">
+                      <span className="dot pulse-dot">•</span>
+                      <span className="dot pulse-dot" style={{ animationDelay: '0.2s' }}>•</span>
+                      <span className="dot pulse-dot" style={{ animationDelay: '0.4s' }}>•</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="onboarding-input-area">
@@ -711,9 +722,10 @@ export default function App() {
                     value={onboardingInput}
                     onChange={e => setOnboardingInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleOnboardingSubmit()}
-                    placeholder="Speak to your Chief of Staff..."
+                    placeholder={onboardingChatLoading ? "Calibrating..." : "Speak to your Chief of Staff..."}
+                    disabled={onboardingChatLoading}
                   />
-                  <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || synthesizing}>
+                  <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || onboardingChatLoading}>
                     Send <Send size={14} style={{ marginLeft: '4px' }} />
                   </button>
                 </div>
