@@ -85,8 +85,6 @@ export default function App() {
 
   // ── Onboarding State ──
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingStep, setOnboardingStep] = useState(0);
-  const [onboardingAnswers, setOnboardingAnswers] = useState(['', '', '']);
   const [onboardingChat, setOnboardingChat] = useState([]);
   const [onboardingInput, setOnboardingInput] = useState('');
   const [synthesizing, setSynthesizing] = useState(false);
@@ -221,8 +219,7 @@ export default function App() {
     if (!settings || !settings.user_profile || settings.user_profile.includes('A busy professional seeking to organize')) {
       console.log('[INFO] User needs onboarding. Showing AI Mind Center...');
       setShowOnboarding(true);
-      setOnboardingStep(0);
-      setOnboardingChat([{ sender: 'ai', text: "Hey there! 👋 I'm your Tasker AI companion. Let's get your inbox intelligence calibrated. First — tell me about yourself! What do you do, and what are your key priorities right now?" }]);
+      setOnboardingChat([{ sender: 'ai', text: "Ayo Boss! 👋 I'm your elite Tasker AI Chief of Staff. Let's calibrate your cognitive matrix. First up — tell me who you are and what your active hustle looks like right now." }]);
     } else if (settings.last_synced_at) {
       console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago. Use sync button to refresh.`);
     }
@@ -309,68 +306,62 @@ export default function App() {
 
   const handleManualSync = () => triggerSync();
 
-  // ── ONBOARDING STEP HANDLER ──
-  const onboardingQuestions = [
-    "Hey there! 👋 I'm your Tasker AI companion. Let's get your inbox intelligence calibrated. First — tell me about yourself! What do you do, and what are your key priorities right now?",
-    "Got it! Now tell me about your email inbox. What kinds of emails do you receive? What's noise vs. important? (e.g., 'Lots of GitHub alerts, some client invoices, newsletters I never read')",
-    "Last one! What tasks do you actually want extracted from your emails? Be specific! (e.g., 'Only bills with due dates, meeting invites, and anything from my boss Sarah')"
-  ];
-
+  // ── ONBOARDING DYNAMIC CHAT HANDLER ──
   const handleOnboardingSubmit = async () => {
     const input = onboardingInput.trim();
     if (!input || synthesizing) return;
 
-    const step = onboardingStep;
-    const newAnswers = [...onboardingAnswers];
-    newAnswers[step] = input;
-    setOnboardingAnswers(newAnswers);
     setOnboardingInput('');
+    const newUserMessage = { sender: 'user', text: input };
+    const updatedChat = [...onboardingChat, newUserMessage];
+    
+    // Optimistically add user bubble
+    setOnboardingChat(updatedChat);
 
-    // Add user bubble
-    setOnboardingChat(prev => [...prev, { sender: 'user', text: input }]);
+    setSynthesizing(true);
+    setSynthesisStatus('Analyzing input...');
 
-    if (step < 2) {
-      // Show typing then next question
-      setOnboardingStep(step + 1);
-      setTimeout(() => {
-        setOnboardingChat(prev => [...prev, { sender: 'ai', text: onboardingQuestions[step + 1] }]);
-      }, 600);
-    } else {
-      // All 3 answers collected — synthesize!
-      setSynthesizing(true);
-      setSynthesisStatus('Synthesizing your cognitive lens...');
+    try {
+      const sess = sessionRef.current;
+      const { data, error } = await supabase.functions.invoke('synthesize_profile', {
+        body: { mode: 'onboarding', chat_history: updatedChat },
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${sess.access_token}`
+        }
+      });
 
-      try {
-        const sess = sessionRef.current;
-        const { data, error } = await supabase.functions.invoke('synthesize_profile', {
-          body: { mode: 'onboarding', messages: newAnswers },
-          headers: {
-            apikey: SUPABASE_KEY,
-            Authorization: `Bearer ${sess.access_token}`
-          }
-        });
+      if (error) throw error;
+      
+      const { finished, ai_response } = data;
 
-        if (error) throw error;
-
+      if (!finished) {
+        // AI needs more information. Add response to chat and continue.
+        setOnboardingChat(prev => [...prev, { sender: 'ai', text: ai_response }]);
+        setSynthesizing(false);
+        setSynthesisStatus('');
+      } else {
+        // AI is satisfied! Finalize process.
+        setOnboardingChat(prev => [...prev, { sender: 'ai', text: ai_response }]);
         setSynthesisStatus('Calibrating extraction filters...');
+        await new Promise(r => setTimeout(r, 1200));
+        setSynthesisStatus('AI Mind initialized! ⚡');
         await new Promise(r => setTimeout(r, 800));
-        setSynthesisStatus('AI Mind initialized!');
-        await new Promise(r => setTimeout(r, 600));
 
         // Now trigger the actual first sync
         setShowOnboarding(false);
         setSynthesizing(false);
         await handleOnboarding(sess);
         await fetchTasks(sess);
-      } catch (e) {
-        console.error('Synthesis error:', e);
-        setSynthesisStatus('Something went wrong. Proceeding with defaults...');
-        await new Promise(r => setTimeout(r, 1500));
-        setShowOnboarding(false);
-        setSynthesizing(false);
-        const sess = sessionRef.current;
-        await handleOnboarding(sess);
       }
+    } catch (e) {
+      console.error('Synthesis error:', e);
+      setSynthesisStatus('Something went wrong. Proceeding with defaults...');
+      await new Promise(r => setTimeout(r, 1500));
+      setShowOnboarding(false);
+      setSynthesizing(false);
+      const sess = sessionRef.current;
+      await handleOnboarding(sess);
     }
   };
 
@@ -714,28 +705,16 @@ export default function App() {
                   {onboardingChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
                 </div>
 
-                <div className="quick-chips">
-                  {onboardingStep === 0 && ['I\'m a student', 'I\'m a developer', 'I\'m a freelancer', 'I manage a team'].map(c => (
-                    <button key={c} className="quick-chip" onClick={() => setOnboardingInput(prev => prev ? prev + ', ' + c.toLowerCase() : c)}>{c}</button>
-                  ))}
-                  {onboardingStep === 1 && ['GitHub notifications', 'Client invoices', 'Newsletters', 'Server alerts', 'Marketing emails'].map(c => (
-                    <button key={c} className="quick-chip" onClick={() => setOnboardingInput(prev => prev ? prev + ', ' + c.toLowerCase() : c)}>{c}</button>
-                  ))}
-                  {onboardingStep === 2 && ['Bills with deadlines', 'Meeting invites', 'Boss emails', 'Assignment deadlines', 'Track everything'].map(c => (
-                    <button key={c} className="quick-chip" onClick={() => setOnboardingInput(prev => prev ? prev + ', ' + c.toLowerCase() : c)}>{c}</button>
-                  ))}
-                </div>
-
                 <div className="onboarding-input-area">
                   <input
                     className="onboarding-input"
                     value={onboardingInput}
                     onChange={e => setOnboardingInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleOnboardingSubmit()}
-                    placeholder={onboardingStep === 0 ? 'Tell me about yourself...' : onboardingStep === 1 ? 'Describe your inbox...' : 'What tasks matter to you...'}
+                    placeholder="Speak to your Chief of Staff..."
                   />
                   <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || synthesizing}>
-                    {onboardingStep < 2 ? 'Next →' : 'Launch AI ✨'}
+                    Send <Send size={14} style={{ marginLeft: '4px' }} />
                   </button>
                 </div>
               </>

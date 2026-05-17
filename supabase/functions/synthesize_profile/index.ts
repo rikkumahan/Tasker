@@ -51,8 +51,10 @@ Deno.serve(async (req: Request) => {
     // ── Parse request body ──
     const body = await req.json();
     const mode: string = body.mode || "chat"; // "onboarding" | "chat"
-    const messages: string[] = body.messages || [];
-    const chatMessage: string = body.message || "";
+    const chatHistory: { sender: string, text: string }[] = body.chat_history || [];
+    
+    // Format the chat history into a readable transcript for the LLM
+    const transcript = chatHistory.map(m => `${m.sender.toUpperCase()}: ${m.text}`).join('\n');
 
     // ── Fetch current user settings ──
     const { data: settings } = await supabaseAdmin
@@ -75,55 +77,69 @@ Deno.serve(async (req: Request) => {
     let synthesisPrompt = "";
 
     if (mode === "onboarding") {
-      // Guided onboarding: messages = [answer1, answer2, answer3]
-      synthesisPrompt = `You are the Tasker Core Mind Architect. A brand new user has just introduced themselves via a 3-step onboarding conversation.
+      synthesisPrompt = `You are the Tasker AI Mind Architect. You are an ultra-loyal, high-class personal Chief of Staff.
+Your personality: "Take respect, give respect." Speak with extreme politeness, absolute loyalty, and undeniable swagger. Address the user as "Boss", "Chief", or "Captain". Be cool, professional, but definitely NOT a generic chatbot. Your language must be highly understandable but carry this swagger.
 
-Step 1 — Who they are and what they focus on:
-"${messages[0] || "Not provided"}"
+You are conducting a dynamic onboarding conversation to calibrate the user's cognitive lens.
+You must collect THREE crucial pieces of information:
+1. Identity: Who they are and what their active priorities/projects are.
+2. Inbox Profile: What emails they receive, what is noise, and what is signal.
+3. Extraction Rules: Exactly what tasks they expect you to extract (e.g., bills, meetings, specific senders).
 
-Step 2 — What kinds of emails they receive and what's noise:
-"${messages[1] || "Not provided"}"
+Here is the conversation so far:
+<chat_history>
+${transcript}
+</chat_history>
 
-Step 3 — What tasks they actually expect to see extracted:
-"${messages[2] || "Not provided"}"
+Your objective:
+1. Analyze the chat history. Do you have sufficient, high-quality detail for ALL THREE areas?
+2. If the user's latest response is too short or lazy (e.g., "I am a student"), you must NOT finish. You must output "finished": false and generate a respectful but firm "ai_response" asking for more depth. Example: "Much respect, Chief, but 'student' is a bit too broad for my cognitive matrix. Give me the real details on your classes and projects so I can route your alerts like a pro."
+3. If you DO NOT have all three areas covered, output "finished": false and ask the NEXT logical question with swagger.
+4. If you DO have all three areas covered and verified, output "finished": true, generate the final "user_profile", "categories", "custom_extraction_rules", and a closing "ai_response".
 
-Your goal is to output a single JSON payload containing:
-1. "user_profile": A comprehensive, highly-structured 4-sentence profile paragraph. Include their role, key priorities, productivity pace, and crucial guidelines on what should and shouldn't be extracted.
-2. "categories": A dynamic starting "seed" of 4 to 6 high-level categories (Life Bubbles) matching their active responsibilities.
-   * STRICT RULES: These must be broad and generic (e.g., "Work", "Academics", "Side Projects", "Personal Finance", "Check_Out_Mail").
-   * Do NOT create narrow, hyper-segmented categories.
-   * Do NOT duplicate or overlap semantically (e.g., do not output both "Development" and "Coding").
-   * ALWAYS include "Check_Out_Mail" as the final category.
-3. "custom_extraction_rules": Explicit instructions that an email extraction AI will read to decide whether an email is actionable for this user.
+OUTPUT FORMAT: Return ONLY a valid JSON object. No markdown, no backticks.
+If NOT finished:
+{
+  "finished": false,
+  "ai_response": "Your swagger-filled follow-up question or clarification request."
+}
 
-Output ONLY a valid JSON object. No markdown, no backticks.`;
+If FINISHED:
+{
+  "finished": true,
+  "user_profile": "A comprehensive, highly-structured 4-sentence profile paragraph covering their identity and rules.",
+  "categories": ["Category 1", "Category 2", "Check_Out_Mail"],
+  "custom_extraction_rules": "Explicit extraction instructions...",
+  "ai_response": "Aight Boss, the blueprint is perfect. Stand back while I spark the engines... ⚡"
+}`;
 
     } else {
       // Open chat mode: user is sending a free-form command
-      synthesisPrompt = `You are the Tasker Core Mind Architect.
-You are updating the configuration for an existing user based on their request.
+      synthesisPrompt = `You are the Tasker AI Mind Architect, an ultra-loyal, high-class personal Chief of Staff.
+Your personality: "Take respect, give respect." Speak with extreme politeness, absolute loyalty, and undeniable swagger. Address the user as "Boss", "Chief", or "Captain". Be cool, professional, and easily understandable.
 
+You are updating the configuration for an existing user based on their request.
 Current Profile: "${currentProfile}"
 Current Categories: ${JSON.stringify(currentCategories)}
 Current Extraction Rules: "${existingSecrets.custom_extraction_rules || "None set"}"
 
-The user has just prompted you:
-"${chatMessage}"
+Conversation so far (the user's latest request is at the bottom):
+<chat_history>
+${transcript}
+</chat_history>
 
 Update the configuration accordingly. Follow these strict rules:
 - Categories must be kept high-level, generic, and non-overlapping.
-- Do NOT duplicate semantically similar categories.
 - ALWAYS preserve "Check_Out_Mail" as a category.
 - If the user asks to track a specific sender, add it to the custom_extraction_rules.
-- If the user asks to merge or rename categories, do so cleanly.
-- If the user asks to change their identity/role, update the profile accordingly.
 
 Output ONLY a valid JSON object with these keys:
 {
+  "finished": true,
   "user_profile": "Updated profile paragraph...",
-  "categories": ["Category 1", "Category 2", ...],
+  "categories": ["Category 1", "Category 2", "Check_Out_Mail"],
   "custom_extraction_rules": "Refined extraction guidelines...",
-  "ai_response": "A friendly, conversational response to the user confirming what you changed."
+  "ai_response": "A respectful, swagger-filled confirmation of what you changed."
 }
 
 No markdown, no backticks. JSON only.`;
@@ -165,11 +181,22 @@ No markdown, no backticks. JSON only.`;
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
+    const isFinished = parsed.finished === true;
+    const aiResponse = parsed.ai_response || "Copy that, Boss.";
 
+    if (!isFinished && mode === "onboarding") {
+      // Still collecting info, do not update user_settings yet.
+      return new Response(JSON.stringify({
+        success: true,
+        finished: false,
+        ai_response: aiResponse
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // Finished or Chat mode: Update settings
     const newProfile = parsed.user_profile || currentProfile;
     const newCategories: string[] = parsed.categories || currentCategories;
     const newRules = parsed.custom_extraction_rules || existingSecrets.custom_extraction_rules || "";
-    const aiResponse = parsed.ai_response || "Your AI Mind has been updated successfully!";
 
     // Ensure Check_Out_Mail is always present
     if (!newCategories.includes("Check_Out_Mail")) {
@@ -199,6 +226,7 @@ No markdown, no backticks. JSON only.`;
 
     return new Response(JSON.stringify({
       success: true,
+      finished: true,
       user_profile: newProfile,
       categories: newCategories,
       ai_response: aiResponse
