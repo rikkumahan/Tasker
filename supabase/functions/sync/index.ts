@@ -52,25 +52,28 @@ Deno.serve(async (req: Request) => {
     try { reqBody = await req.json(); } catch { }
     let tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
 
-    // Check if this is a service role key (used by background_worker)
-    // Service keys are JWTs with role="service_role" in the payload
-    try {
-      const parts = tokenStr.split('.');
-      if (parts.length === 3) {
-        const base64Url = parts[1];
-        let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const pad = base64.length % 4;
-        if (pad) base64 += '='.repeat(4 - pad);
-        const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
-        const payload = JSON.parse(jsonPayload);
-        if (payload.role === "service_role" && reqBody.user_id) {
-          user = { id: reqBody.user_id };
-        } else if (payload.sub) {
-          user = { id: payload.sub, email: payload.email || "" };
+    // Check if this is the internal service role key (used by background_worker)
+    if (tokenStr === (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim() && reqBody.user_id) {
+      user = { id: reqBody.user_id };
+    } else {
+      try {
+        const parts = tokenStr.split('.');
+        if (parts.length === 3) {
+          const base64Url = parts[1];
+          let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          const pad = base64.length % 4;
+          if (pad) base64 += '='.repeat(4 - pad);
+          const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+          const payload = JSON.parse(jsonPayload);
+          if (payload.role === "service_role" && reqBody.user_id) {
+            user = { id: reqBody.user_id };
+          } else if (payload.sub) {
+            user = { id: payload.sub, email: payload.email || "" };
+          }
         }
+      } catch (e: any) {
+        console.warn("JWT decode failed, trying fallback...", e.message);
       }
-    } catch (e: any) {
-      console.warn("JWT decode failed, trying fallback...", e.message);
     }
 
     // Fallback for user session tokens that failed manual decode
@@ -320,10 +323,19 @@ Deno.serve(async (req: Request) => {
     // Stage 2 (Persona Evolution) runs in the BACKGROUND via EdgeRuntime.waitUntil.
     // Stage 3 (Categorization) runs on the CURRENT profile immediately.
     // Result: We remove an entire LLM roundtrip from the critical path!
-    const shouldEvolve = (isNewUser || unprocessedEmails.length > 20) && rawTasks.length > 0;
+    const shouldEvolve = rawTasks.length > 0;
     if (shouldEvolve) {
       fireAndForget(
-        evolvePersonaFromTasks(rawTasks, currentProfile, currentCategories, supabaseAdmin, settings.id, user.id)
+        evolvePersonaFromTasks(
+          rawTasks,
+          currentProfile,
+          currentCategories,
+          pendingTasksContext,
+          recentActions,
+          supabaseAdmin,
+          settings.id,
+          user.id
+        )
       );
     }
 

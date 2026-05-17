@@ -4,8 +4,9 @@ import { prePassRedact, shannonEntropy, luhnValid } from "./pii.ts";
 import { sleep, getSeason, lenientParseArray } from "./utils.ts";
 
 // ═══════════════════════════════════════════════════════════════
-// STAGE 1: UNIVERSAL EXTRACTION (Identity-Blind)
-// No user_profile in prompt. Extracts pure facts from all emails.
+// STAGE 1: PERSONA-AWARE EXTRACTION
+// Reads user_profile + custom_extraction_rules from user_settings
+// to personalize which emails become tasks.
 // ═══════════════════════════════════════════════════════════════
 export const extractRawTasks = async (
   emailsToProcess: any[],
@@ -125,14 +126,35 @@ export const extractRawTasks = async (
     ? `\n\nUSER'S CURRENT PENDING TASKS (for update detection):\n${pendingTasksContext}\n\nIMPORTANT: If an email is an UPDATE to an existing task (e.g.,"deadline extended","event rescheduled"), return { "is_update": true, "existing_task_id": "[TASK_ID]", "deadline": "new ISO date" } instead.`
     : "";
 
-  // STAGE 1 CORE: No user_profile, no categories. Universal extraction only.
+  // ── Load user's AI Mind configuration for personalized extraction ──
+  let userProfileContext = "";
+  let customRulesContext = "";
+  try {
+    const { data: userCfg } = await supabaseAdmin
+      .from("user_settings")
+      .select("user_profile, secrets")
+      .eq("user_id", userId)
+      .single();
+    if (userCfg?.user_profile && !userCfg.user_profile.includes("Initial Sync Stage")) {
+      userProfileContext = `\nUSER PROFILE (use this to understand what matters to them):\n"${userCfg.user_profile}"\n`;
+    }
+    if (userCfg?.secrets?.custom_extraction_rules) {
+      customRulesContext = `\nUSER-SPECIFIC EXTRACTION OVERRIDES (HIGHEST PRIORITY — follow these precisely):\n"${userCfg.secrets.custom_extraction_rules}"\n`;
+    }
+  } catch { /* user_settings not found — proceed with generic extraction */ }
+
+  // STAGE 1 CORE: Persona-aware extraction.
   const prompt = `Time: ${nowIst}.
-Extract actionable tasks from these emails. Return ONLY a valid JSON array.
+Extract actionable tasks and useful information from these emails. Return ONLY a valid JSON array.
 Each task MUST include the exact source_email_id from [EMAIL_ID: xxx].
+${userProfileContext}${customRulesContext}
 Rules:
-- If an email has a required action, deadline, or meeting → extract it. Do NOT judge relevance.
-- If an email has zero actionable content (receipt, promotional banner with no deadline) → omit it entirely.
-- If an email is informational or low priority but has some relevance → extract it with category "Check_Out_Mail".
+- Extract ANY email that contains personal importance, meetings, subscriptions, bills, news, updates, or anything useful. Do NOT judge relevance.
+- If an email is 100% spam or pure promotional junk -> omit it entirely.
+- If an email is informational, news, or a general update with no strict deadline -> extract it with category "Check_Out_Mail".
+- If it has a specific action, deadline, or meeting -> extract it normally.
+- If the user's extraction overrides specify tracking a specific sender or topic, ALWAYS extract those emails regardless of other rules.
+- CRITICAL: You MUST include the exact "source_email_id" field for every single item you extract.
 ${pendingContext}
 ${actionContext}
 
@@ -207,6 +229,8 @@ export const evolvePersonaFromTasks = async (
   rawTasks: any[],
   currentProfile: string,
   currentCategories: string[],
+  pendingTasksContext: string,
+  recentActions: string[],
   supabaseAdmin: any,
   settingsId: string,
   userId: string
@@ -219,27 +243,56 @@ export const evolvePersonaFromTasks = async (
   const season = getSeason(now.getMonth());
   const quarter = `Q${Math.floor(now.getMonth() / 3) + 1}`;
 
+  // Behavioral Analytics
+  const completed = recentActions.filter(a => a.startsWith("Completed")).length;
+  const deleted = recentActions.filter(a => a.startsWith("Deleted")).length;
+  const total = completed + deleted || 1; // avoid div/0
+  const completionRate = Math.round((completed / total) * 100);
+  
+  const behavioralContext = recentActions.length > 0 
+    ? `Behavioral Telemetry (Last ${total} actions):\n- Task Completion Rate: ${completionRate}%\n- Recent Actions:\n${recentActions.map(a => `  * ${a}`).join("\n")}`
+    : `Behavioral Telemetry: No recent actions yet.`;
+
   const taskSample = rawTasks.map(t => `- "${t.title || t.summary || "Untitled"}" (Deadline: ${t.deadline || "none"})`).join("\n");
 
-  const personaPrompt = `Here is the user's historical context:
- "${currentProfile}"
- Current Categories: [${currentCategories.join(", ")}]
- Current Temporal Context: ${month}, ${season} (${quarter})
- 
- Newly extracted tasks:
- ${taskSample}
- 
- Based on these NEW TASKS, EVOLVE their context.
- 1. Add new habits/patterns you discover.
- 2. Gracefully retire completely outdated tasks or projects.
- 3. CRITICAL LIMIT: DO NOT change the user's fundamental profession/identity (e.g., if they are a College Student, do not make them a Software Engineer).
- 4. DYNAMICALLY create meaningful, highly-personalized categories that represent the user's active life blocks, courses, or long-term projects.
-    - CLUSTER similar tasks together. DO NOT create a separate category for every single task. 
-    - A category should be specific to their context but capable of holding multiple tasks (e.g., "Equinox Hackathon Prep", "AWS Cloud Coursework", "Campus Placements").
-    - Do NOT use the exact task title as the category name. Generalize it into an ongoing theme or project bucket.
- 
- JSON ONLY format:
- { "user_profile": "...", "categories": ["Equinox Hackathon", "Cloud Coursework", "Personal Leisure", "..."] }`;
+  const personaPrompt = `Here is the user's FULL context:
+
+HISTORICAL PROFILE:
+"${currentProfile}"
+
+ACTIVE LIFE BUBBLES (Current Categories):
+[${currentCategories.join(", ")}]
+
+TEMPORAL CONTEXT:
+${month}, ${season} (${quarter})
+
+${behavioralContext}
+
+EXISTING PENDING TASKS (What they are already working on):
+${pendingTasksContext || "None."}
+
+NEWLY ARRIVED TASKS:
+${taskSample}
+
+YOUR MISSION: EVOLVE THEIR PERSONA AND CATEGORIES.
+Act as a world-class executive assistant. Analyze the user's workload, behavior, and temporal context, then update their profile and categories.
+
+STRICT GUARDRAILS & RULES:
+1. DEEP BEHAVIORAL ANALYSIS: Look at their recent actions. Are they deleting specific types of tasks? If so, note their lack of interest in that area. Are they highly disciplined? Note their execution style.
+2. TEMPORAL LIFECYCLES: Has the season or quarter changed? Cleanly sunset outdated projects (e.g., don't keep "Spring Finals" if it's Summer).
+3. IDENTITY PRESERVATION: **DO NOT** radically change their fundamental identity based on 1 or 2 new tasks. Require overwhelming evidence to shift from "Student" to "Software Engineer". Evolve, do not hallucinate.
+4. ANTI-SPRAWL CATEGORY CONSOLIDATION (GARBAGE COLLECTION):
+   - You MUST act as a semantic garbage collector.
+   - MERGE redundant categories (e.g., collapse "AWS Cloud", "AWS Course", and "Cloud Architecture" into just "Cloud Engineering").
+   - CLUSTER tasks into distinct "Life Bubbles" (Professional, Academic, Personal, Projects).
+   - DO NOT create a new category for every single task. 
+   - A healthy profile has 3 to 8 high-level, cohesive categories.
+
+JSON ONLY format (DO NOT WRAP IN BACKTICKS):
+{
+  "user_profile": "Updated highly-descriptive behavioral profile...",
+  "categories": ["Merged Category 1", "Evolved Project 2", "Personal Core", "..."]
+}`;
 
   try {
     const pRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { differenceInDays, isPast, isToday, isTomorrow, format, startOfDay } from 'date-fns';
-import { ChevronDown, ChevronRight, Star, ExternalLink, RefreshCw, LogOut, Trash2, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Star, ExternalLink, RefreshCw, LogOut, Trash2, AlertCircle, Brain, X, Send } from 'lucide-react';
 import Auth from './Auth';
 import './index.css';
 
@@ -76,6 +76,23 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState({});
   const [userSettings, setUserSettings] = useState(null);
+
+  // ── AI Mind & Evolution Center State ──
+  const [isMindOpen, setIsMindOpen] = useState(false);
+  const [mindChat, setMindChat] = useState([]);
+  const [mindInput, setMindInput] = useState('');
+  const [mindLoading, setMindLoading] = useState(false);
+
+  // ── Onboarding State ──
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [onboardingAnswers, setOnboardingAnswers] = useState(['', '', '']);
+  const [onboardingChat, setOnboardingChat] = useState([]);
+  const [onboardingInput, setOnboardingInput] = useState('');
+  const [synthesizing, setSynthesizing] = useState(false);
+  const [synthesisStatus, setSynthesisStatus] = useState('');
+  const onboardingChatRef = React.useRef(null);
+  const mindChatRef = React.useRef(null);
 
   // Store session and intervals in refs so they persist across renders and are accessible in cleanup
   const sessionRef = React.useRef(null);
@@ -170,7 +187,7 @@ export default function App() {
     // Fetch user settings for synced time + trigger lock
     const { data: settingsData, error: settingsError } = await supabase
       .from('user_settings')
-      .select('last_synced_at, last_sync_triggered_at, user_profile, categories, last_sync_error')
+      .select('last_synced_at, last_sync_triggered_at, user_profile, categories, last_sync_error, secrets')
       .eq('user_id', activeSess.user.id)
       .maybeSingle();
 
@@ -201,12 +218,12 @@ export default function App() {
       .eq('user_id', sess.user.id)
       .maybeSingle();
     
-    if (!settings || !settings.user_profile) {
-      console.log('[INFO] User missing profile. Initiating first-time sync...');
-      await handleOnboarding(sess);
+    if (!settings || !settings.user_profile || settings.user_profile.includes('A busy professional seeking to organize')) {
+      console.log('[INFO] User needs onboarding. Showing AI Mind Center...');
+      setShowOnboarding(true);
+      setOnboardingStep(0);
+      setOnboardingChat([{ sender: 'ai', text: "Hey there! 👋 I'm your Tasker AI companion. Let's get your inbox intelligence calibrated. First — tell me about yourself! What do you do, and what are your key priorities right now?" }]);
     } else if (settings.last_synced_at) {
-      // Removed auto-stale-trigger: was firing empty synces on every app load after 30min
-      // wasting LLM quota and creating unnecessary ghost tasks. User can manually sync instead.
       console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago. Use sync button to refresh.`);
     }
   };
@@ -291,6 +308,113 @@ export default function App() {
   };
 
   const handleManualSync = () => triggerSync();
+
+  // ── ONBOARDING STEP HANDLER ──
+  const onboardingQuestions = [
+    "Hey there! 👋 I'm your Tasker AI companion. Let's get your inbox intelligence calibrated. First — tell me about yourself! What do you do, and what are your key priorities right now?",
+    "Got it! Now tell me about your email inbox. What kinds of emails do you receive? What's noise vs. important? (e.g., 'Lots of GitHub alerts, some client invoices, newsletters I never read')",
+    "Last one! What tasks do you actually want extracted from your emails? Be specific! (e.g., 'Only bills with due dates, meeting invites, and anything from my boss Sarah')"
+  ];
+
+  const handleOnboardingSubmit = async () => {
+    const input = onboardingInput.trim();
+    if (!input || synthesizing) return;
+
+    const step = onboardingStep;
+    const newAnswers = [...onboardingAnswers];
+    newAnswers[step] = input;
+    setOnboardingAnswers(newAnswers);
+    setOnboardingInput('');
+
+    // Add user bubble
+    setOnboardingChat(prev => [...prev, { sender: 'user', text: input }]);
+
+    if (step < 2) {
+      // Show typing then next question
+      setOnboardingStep(step + 1);
+      setTimeout(() => {
+        setOnboardingChat(prev => [...prev, { sender: 'ai', text: onboardingQuestions[step + 1] }]);
+      }, 600);
+    } else {
+      // All 3 answers collected — synthesize!
+      setSynthesizing(true);
+      setSynthesisStatus('Synthesizing your cognitive lens...');
+
+      try {
+        const sess = sessionRef.current;
+        const { data, error } = await supabase.functions.invoke('synthesize_profile', {
+          body: { mode: 'onboarding', messages: newAnswers },
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${sess.access_token}`
+          }
+        });
+
+        if (error) throw error;
+
+        setSynthesisStatus('Calibrating extraction filters...');
+        await new Promise(r => setTimeout(r, 800));
+        setSynthesisStatus('AI Mind initialized!');
+        await new Promise(r => setTimeout(r, 600));
+
+        // Now trigger the actual first sync
+        setShowOnboarding(false);
+        setSynthesizing(false);
+        await handleOnboarding(sess);
+        await fetchTasks(sess);
+      } catch (e) {
+        console.error('Synthesis error:', e);
+        setSynthesisStatus('Something went wrong. Proceeding with defaults...');
+        await new Promise(r => setTimeout(r, 1500));
+        setShowOnboarding(false);
+        setSynthesizing(false);
+        const sess = sessionRef.current;
+        await handleOnboarding(sess);
+      }
+    }
+  };
+
+  // ── AI MIND OPEN CHAT HANDLER ──
+  const handleMindChat = async () => {
+    const msg = mindInput.trim();
+    if (!msg || mindLoading) return;
+
+    setMindInput('');
+    setMindChat(prev => [...prev, { sender: 'user', text: msg }]);
+    setMindLoading(true);
+
+    try {
+      const sess = sessionRef.current;
+      const { data, error } = await supabase.functions.invoke('synthesize_profile', {
+        body: { mode: 'chat', message: msg },
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${sess.access_token}`
+        }
+      });
+
+      if (error) throw error;
+
+      setMindChat(prev => [...prev, { sender: 'ai', text: data.ai_response || 'Done! Your AI Mind has been updated.' }]);
+
+      // Refresh settings to reflect new categories
+      await fetchTasks(sess, true);
+    } catch (e) {
+      console.error('Mind chat error:', e);
+      setMindChat(prev => [...prev, { sender: 'ai', text: 'Sorry, something went wrong. Please try again.' }]);
+    } finally {
+      setMindLoading(false);
+    }
+  };
+
+  // Auto-scroll chat areas
+  React.useEffect(() => {
+    if (onboardingChatRef.current) onboardingChatRef.current.scrollTop = onboardingChatRef.current.scrollHeight;
+  }, [onboardingChat]);
+
+  React.useEffect(() => {
+    if (mindChatRef.current) mindChatRef.current.scrollTop = mindChatRef.current.scrollHeight;
+  }, [mindChat]);
 
   const logAction = async (actionText) => {
     const activeSess = sessionRef.current;
@@ -451,6 +575,13 @@ export default function App() {
             </span>
           )}
           <button
+            onClick={() => { setIsMindOpen(true); if (mindChat.length === 0) setMindChat([{ sender: 'ai', text: 'Hey! I\'m your AI Mind companion. Ask me to adjust categories, track specific senders, or refine how I extract tasks from your inbox.' }]); }}
+            className="mind-btn"
+            title="AI Mind Center"
+          >
+            <Brain size={20} />
+          </button>
+          <button
             onClick={handleManualSync}
             className={`sync-btn ${syncing ? 'spinning' : ''}`}
             disabled={syncing || !supabase}
@@ -516,6 +647,102 @@ export default function App() {
           ))
         )}
       </main>
+
+      {/* ═══ AI MIND DRAWER (All Users) ═══ */}
+      {isMindOpen && (
+        <>
+          <div className="mind-backdrop" onClick={() => setIsMindOpen(false)} />
+          <div className="mind-drawer">
+            <div className="mind-header">
+              <h2>🧠 AI Mind Center</h2>
+              <button className="mind-close-btn" onClick={() => setIsMindOpen(false)}><X size={16} /></button>
+            </div>
+
+            {userSettings?.user_profile && (
+              <div className="mind-profile-card">
+                <div className="label">Current Cognitive Profile</div>
+                <p>{userSettings.user_profile.length > 180 ? userSettings.user_profile.substring(0, 180) + '...' : userSettings.user_profile}</p>
+                <div className="mind-categories">
+                  {(userSettings.categories || []).map(c => <span key={c} className="mind-cat-chip">{c}</span>)}
+                </div>
+              </div>
+            )}
+
+            <div className="mind-chat" ref={mindChatRef}>
+              {mindChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
+              {mindLoading && <div className="typing-dots"><span /><span /><span /></div>}
+            </div>
+
+            <div className="quick-chips">
+              {['Track my boss\'s emails', 'Merge categories', 'Filter newsletters', 'Add new category'].map(chip => (
+                <button key={chip} className="quick-chip" onClick={() => setMindInput(chip)}>{chip}</button>
+              ))}
+            </div>
+
+            <div className="mind-input-bar">
+              <input
+                className="mind-input"
+                value={mindInput}
+                onChange={e => setMindInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleMindChat()}
+                placeholder="Prompt your AI companion..."
+                disabled={mindLoading}
+              />
+              <button className="mind-send-btn" onClick={handleMindChat} disabled={mindLoading || !mindInput.trim()}>
+                <Send size={16} />
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ═══ ONBOARDING OVERLAY (New Users) ═══ */}
+      {showOnboarding && (
+        <div className="onboarding-overlay">
+          <div className="onboarding-card">
+            <h1>Welcome to Tasker AI</h1>
+            <p className="subtitle">Let's calibrate your personal AI mind in 3 quick steps</p>
+
+            {synthesizing ? (
+              <div className="synthesis-loading">
+                <div className="synthesis-orb" />
+                <p className="synthesis-status">{synthesisStatus}</p>
+              </div>
+            ) : (
+              <>
+                <div className="onboarding-chat-area" ref={onboardingChatRef}>
+                  {onboardingChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
+                </div>
+
+                <div className="quick-chips">
+                  {onboardingStep === 0 && ['I\'m a student', 'I\'m a developer', 'I\'m a freelancer', 'I manage a team'].map(c => (
+                    <button key={c} className="quick-chip" onClick={() => setOnboardingInput(prev => prev ? prev + ', ' + c.toLowerCase() : c)}>{c}</button>
+                  ))}
+                  {onboardingStep === 1 && ['GitHub notifications', 'Client invoices', 'Newsletters', 'Server alerts', 'Marketing emails'].map(c => (
+                    <button key={c} className="quick-chip" onClick={() => setOnboardingInput(prev => prev ? prev + ', ' + c.toLowerCase() : c)}>{c}</button>
+                  ))}
+                  {onboardingStep === 2 && ['Bills with deadlines', 'Meeting invites', 'Boss emails', 'Assignment deadlines', 'Track everything'].map(c => (
+                    <button key={c} className="quick-chip" onClick={() => setOnboardingInput(prev => prev ? prev + ', ' + c.toLowerCase() : c)}>{c}</button>
+                  ))}
+                </div>
+
+                <div className="onboarding-input-area">
+                  <input
+                    className="onboarding-input"
+                    value={onboardingInput}
+                    onChange={e => setOnboardingInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleOnboardingSubmit()}
+                    placeholder={onboardingStep === 0 ? 'Tell me about yourself...' : onboardingStep === 1 ? 'Describe your inbox...' : 'What tasks matter to you...'}
+                  />
+                  <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || synthesizing}>
+                    {onboardingStep < 2 ? 'Next →' : 'Launch AI ✨'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
