@@ -950,6 +950,7 @@ Deno.serve(async (req: Request) => {
     if (isPageDone && nextPageToken) {
       await supabaseAdmin.from("user_settings").update({
         sync_page_token: nextPageToken,
+        last_synced_at: new Date().toISOString(),
         sync_in_progress: false,
         sync_lock_at: null
       }).eq("id", settings.id);
@@ -968,7 +969,8 @@ Deno.serve(async (req: Request) => {
       // More work in current page - release lock for next attempt (Worker or User)
       await supabaseAdmin.from("user_settings").update({
         sync_in_progress: false,
-        sync_lock_at: null
+        sync_lock_at: null,
+        last_synced_at: new Date().toISOString()
       }).eq("id", settings.id);
       
       // If we still have emails in this page, trigger background worker to pick up the slack
