@@ -27,8 +27,9 @@ export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, 
 
 // ── TEMPORAL UTILITIES ──
 export function getSeason(monthIndex: number): string {
-  const seasons = ['Winter', 'Spring', 'Summer', 'Fall'];
-  return seasons[Math.floor(monthIndex / 3)];
+  // Explicit mapping: Dec(11)/Jan(0)/Feb(1)=Winter, Mar-May=Spring, Jun-Aug=Summer, Sep-Nov=Fall
+  const seasonMap = ['Winter', 'Winter', 'Spring', 'Spring', 'Spring', 'Summer', 'Summer', 'Summer', 'Fall', 'Fall', 'Fall', 'Winter'];
+  return seasonMap[monthIndex] || 'Winter';
 }
 
 // ─────────────────────────────────────────────

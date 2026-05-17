@@ -170,7 +170,7 @@ export default function App() {
     // Fetch user settings for synced time + trigger lock
     const { data: settingsData, error: settingsError } = await supabase
       .from('user_settings')
-      .select('last_synced_at, last_sync_triggered_at, user_profile, categories')
+      .select('last_synced_at, last_sync_triggered_at, user_profile, categories, last_sync_error')
       .eq('user_id', activeSess.user.id)
       .maybeSingle();
 

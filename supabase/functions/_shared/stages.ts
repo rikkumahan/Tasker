@@ -119,7 +119,7 @@ export const extractRawTasks = async (
   }
 
   const batchedText = safeEmails.join("\n\n---\n\n");
-  console.log("🔒 SHIELDED BATCH:", batchedText);
+  console.log(`🔒 SHIELDED BATCH: ${safeEmails.length} emails processed through PII pipeline`);
 
   const pendingContext = pendingTasksContext
     ? `\n\nUSER'S CURRENT PENDING TASKS (for update detection):\n${pendingTasksContext}\n\nIMPORTANT: If an email is an UPDATE to an existing task (e.g.,"deadline extended","event rescheduled"), return { "is_update": true, "existing_task_id": "[TASK_ID]", "deadline": "new ISO date" } instead.`
@@ -248,14 +248,24 @@ export const evolvePersonaFromTasks = async (
       body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: personaPrompt }] })
     });
     const pData = await pRes.json();
-    const match = (pData.choices?.[0]?.message?.content || "").match(/\{[\s\S]*\}/);
+    // BUG FIX #3: Strip markdown backticks before regex extraction (matches categorizeTasks behavior)
+    let rawContent = pData.choices?.[0]?.message?.content || "";
+    rawContent = rawContent.replace(/```json/g, "").replace(/```/g, "").trim();
+    const match = rawContent.match(/\{[\s\S]*\}/);
     if (match) {
       const parsed = JSON.parse(match[0]);
       const updatedProfile = parsed.user_profile || currentProfile;
-      const updatedCategories = parsed.categories || currentCategories;
-      await supabaseAdmin.from("user_settings").update({ user_profile: updatedProfile, categories: updatedCategories }).eq("id", settingsId);
-      await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "PERSONA_EVOLVED", data: { profile: updatedProfile, categories: updatedCategories } });
-      return { updatedProfile, updatedCategories };
+      const evolvedCategories = parsed.categories || currentCategories;
+
+      // BUG FIX #4: Merge with current DB state instead of blind overwrite.
+      // Stage 3 may have added new categories while we were running in the background.
+      const { data: freshSettings } = await supabaseAdmin.from("user_settings").select("categories").eq("id", settingsId).single();
+      const existingDbCategories: string[] = freshSettings?.categories || [];
+      const mergedCategories = Array.from(new Set([...existingDbCategories, ...evolvedCategories]));
+
+      await supabaseAdmin.from("user_settings").update({ user_profile: updatedProfile, categories: mergedCategories }).eq("id", settingsId);
+      await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "PERSONA_EVOLVED", data: { profile: updatedProfile, categories: mergedCategories } });
+      return { updatedProfile, updatedCategories: mergedCategories };
     }
   } catch (e: any) {
     await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "PERSONA_ERR", data: { error: e.message } });
@@ -400,7 +410,7 @@ export const categorizeTasks = async (
 // WARNING ENGINE: Computes deadline badges post-upsert
 // ═══════════════════════════════════════════════════════════════
 export const runWarningEngine = async (supabaseAdmin: any, userId: string, finalTasks: any[], updatedTaskIds: string[]) => {
-  if (finalTasks.length === 0 && updatedTaskIds.length === 0) return;
+  // BUG FIX #6: Removed early-return guard. Always recalculate so deadline badges stay fresh.
 
   const { data: allActive } = await supabaseAdmin.from("tasks")
     .select("id, deadline, warnings").eq("user_id", userId).eq("status", "pending");

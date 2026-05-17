@@ -211,42 +211,51 @@ Deno.serve(async (req: Request) => {
 
     asyncLog(supabaseAdmin, user.id, "GMAIL_FETCH", { count: messages.length, page_token: storedPageToken, next_page_token: nextPageToken });
 
-    const emails = (await Promise.all(messages.map(async (m: any) => {
+    // ── SEQUENTIAL DETAIL FETCH WITH SINGLE-REFRESH MUTEX ──
+    // BUG FIX: Previously used Promise.all which caused up to 25 concurrent OAuth refresh calls.
+    // Now fetches sequentially with a single-refresh guard to prevent token refresh storms.
+    let tokenRefreshed = false;
+    const emails: any[] = [];
+    for (const m of messages) {
       try {
         let detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
           headers: { Authorization: `Bearer ${gmailToken}` }
         });
 
-        // ── OAUTH RETRY INTERCEPTOR FOR DETAIL FETCH ──
-        if (detailRes.status === 401 && settings.gmail_token?.refresh_token) {
-          console.log(`[OAUTH] Token expired during detail fetch for user ${user.id}. Triggering Auto-Heal refresh routine...`);
+        // ── OAUTH RETRY INTERCEPTOR (Single-Refresh Guard) ──
+        if (detailRes.status === 401 && !tokenRefreshed && settings.gmail_token?.refresh_token) {
+          console.log(`[OAUTH] Token expired during detail fetch for user ${user.id}. Refreshing once...`);
           const freshToken = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
-          if (!freshToken) {
-            return null; // Skip this email if we can't refresh token
+          if (freshToken) {
+            gmailToken = freshToken;
+            tokenRefreshed = true;
+            // Re-fire with fresh token
+            detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
+              headers: { Authorization: `Bearer ${gmailToken}` }
+            });
+          } else {
+            continue; // Skip this email if refresh failed
           }
-          gmailToken = freshToken;
-          // Re-fire the fetch with fresh token
-          detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
-            headers: { Authorization: `Bearer ${gmailToken}` }
-          });
+        } else if (detailRes.status === 401) {
+          continue; // Token already refreshed once and still failing — skip
         }
 
         const fullMsg = await detailRes.json();
-        if (!fullMsg.payload) return null;
+        if (!fullMsg.payload) continue;
         const headers = (fullMsg.payload.headers || []).reduce((acc: any, h: any) => ({ ...acc, [h.name]: h.value }), {});
         const decodedBody = decodeBody(fullMsg.payload);
         const body = (decodedBody !== null && decodedBody !== undefined)
           ? decodedBody.substring(0, 1500).replace(/\n/g, " ").trim()
           : "";
-        return {
+        emails.push({
           id: m.id,
           subject: (headers.Subject !== null && headers.Subject !== undefined) ? headers.Subject : "(no subject)",
           sender: (headers.From !== null && headers.From !== undefined) ? headers.From : "unknown",
           date: (headers.Date !== null && headers.Date !== undefined) ? headers.Date : "",
           body
-        };
-      } catch { return null; }
-    }))).filter(Boolean);
+        });
+      } catch { /* skip failed email */ }
+    }
 
     // Dedup: Remove already-processed emails
     const { data: existingTasks } = await supabaseAdmin.from("tasks")
@@ -371,7 +380,8 @@ Deno.serve(async (req: Request) => {
     }
 
     // Warning Engine — fire-and-forget via EdgeRuntime.waitUntil (pure DB I/O)
-    fireAndForget(runWarningEngine(supabaseAdmin, user.id, [], updatedTaskIds));
+    // BUG FIX #6: Always run the warning engine to keep deadline badges fresh
+    fireAndForget(runWarningEngine(supabaseAdmin, user.id, finalTasks, updatedTaskIds));
 
     const remainingCount = unprocessedEmails.length - batchIds.length;
     const isPageDone = remainingCount === 0;
