@@ -33,8 +33,8 @@ export default function Auth({ supabase }) {
     <div className="auth-container">
       <div className="auth-card glass-panel">
         <div className="auth-header">
-          <div className="auth-icon-wrapper">
-            <Sparkles className="auth-main-icon" size={32} />
+          <div className="auth-icon-wrapper logo-wrapper">
+            <img src="/icons/logo.png" alt="Tasker AI Logo" className="auth-logo" />
           </div>
           <h1>Tasker AI</h1>
           <p>Your inbox, intelligently organized.</p>

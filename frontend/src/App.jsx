@@ -545,17 +545,20 @@ export default function App() {
       {!showOnboarding && (
         <>
           <header className="app-header">
-            <div className="header-info">
-          <h1>My Tasks</h1>
-          <p className="date-display">{format(new Date(), 'EEEE, MMMM do')}</p>
-          {userSettings?.user_profile && (
-            <p className="profile-subheadline" title={userSettings.user_profile}>
-              {userSettings.user_profile.length > 100 
-                ? `${userSettings.user_profile.substring(0, 100)}...` 
-                : userSettings.user_profile}
-            </p>
-          )}
-        </div>
+            <div className="header-info" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+              <img src="/icons/logo.png" alt="Tasker AI Logo" className="app-header-logo" />
+              <div>
+                <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>My Tasks</h1>
+                <p className="date-display" style={{ margin: 0 }}>{format(new Date(), 'EEEE, MMMM do')}</p>
+                {userSettings?.user_profile && (
+                  <p className="profile-subheadline" title={userSettings.user_profile} style={{ margin: '0.1rem 0 0' }}>
+                    {userSettings.user_profile.length > 100 
+                      ? `${userSettings.user_profile.substring(0, 100)}...` 
+                      : userSettings.user_profile}
+                  </p>
+                )}
+              </div>
+            </div>
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
           {syncing ? (
             <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }} className="pulse">
