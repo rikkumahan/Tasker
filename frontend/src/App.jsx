@@ -186,7 +186,7 @@ export default function App() {
     // Fetch user settings for synced time + trigger lock
     const { data: settingsData, error: settingsError } = await supabase
       .from('user_settings')
-      .select('last_synced_at, last_sync_triggered_at, user_profile, categories, last_sync_error, secrets')
+      .select('last_synced_at, last_sync_triggered_at, user_profile, categories, last_sync_error, secrets, gmail_email')
       .eq('user_id', activeSess.user.id)
       .maybeSingle();
 
@@ -636,6 +636,7 @@ export default function App() {
                       onToggleStar={toggleStar}
                       onComplete={toggleComplete}
                       onTaskDelete={deleteTask}
+                      gmailEmail={userSettings?.gmail_email}
                     />
                   ))}
                 </div>
@@ -743,7 +744,7 @@ export default function App() {
   );
 }
 
-function TaskCard({ task, onToggleStar, onComplete, onTaskDelete }) {
+function TaskCard({ task, onToggleStar, onComplete, onTaskDelete, gmailEmail }) {
   const [expanded, setExpanded] = useState(false);
   const urgency = getUrgencyLevel(task.deadline);
 
@@ -796,7 +797,10 @@ function TaskCard({ task, onToggleStar, onComplete, onTaskDelete }) {
           {task.location && <p className="location">📍 {task.location}</p>}
           {task.source_email_id && (
             <a
-              href={`https://mail.google.com/mail/u/0/#inbox/${task.source_email_id}`}
+              href={gmailEmail 
+                ? `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(gmailEmail)}#all/${task.source_email_id}`
+                : `https://mail.google.com/mail/u/0/#all/${task.source_email_id}`
+              }
               target="_blank"
               rel="noopener noreferrer"
               className="email-link"
