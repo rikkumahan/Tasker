@@ -125,11 +125,7 @@ Deno.serve(async (req: Request) => {
       } catch (e: any) { console.warn("Gmail watch error:", e.message); }
     }
 
-    if (reqBody.bootstrap_only) {
-      return new Response(JSON.stringify({ success: true, message: "Bootstrapped successfully. Awaiting onboarding completion." }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
+
 
     asyncLog(supabaseAdmin, user.id, "V21_SYNC_START", {});
 
@@ -266,11 +262,47 @@ Deno.serve(async (req: Request) => {
       } catch { /* skip failed email */ }
     }
 
-    // Dedup: Remove already-processed emails
-    const { data: existingTasks } = await supabaseAdmin.from("tasks")
-      .select("source_email_id").eq("user_id", user.id).in("source_email_id", emails.map((e: any) => e.id));
-    const processedSet = new Set((existingTasks || []).map((t: any) => t.source_email_id));
-    const unprocessedEmails = emails.filter((e: any) => !processedSet.has(e.id));
+    // Save to raw_emails queue
+    if (emails.length > 0) {
+      const rawEmailInserts = emails.map((e: any) => ({
+        user_id: user.id,
+        message_id: e.id,
+        subject: e.subject,
+        snippet: e.body.substring(0, 500),
+        body: e.body,
+        received_at: e.date ? new Date(e.date).toISOString() : new Date().toISOString(),
+        status: "pending"
+      }));
+      await supabaseAdmin.from("raw_emails").upsert(rawEmailInserts, { onConflict: "user_id, message_id" });
+    }
+
+    if (reqBody.bootstrap_only) {
+      // Advance the page token so the next fetch gets new emails
+      await supabaseAdmin.from("user_settings").update({
+        sync_page_token: nextPageToken,
+        sync_in_progress: false,
+        sync_lock_at: null
+      }).eq("id", settings.id);
+      
+      return new Response(JSON.stringify({ success: true, message: "Bootstrapped and fetched raw emails." }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    // Fetch batch from raw_emails queue for processing
+    const { data: pendingRaws } = await supabaseAdmin.from("raw_emails")
+      .select("*")
+      .eq("user_id", user.id)
+      .eq("status", "pending")
+      .order("received_at", { ascending: false })
+      .limit(15);
+
+    const unprocessedEmails = (pendingRaws || []).map((r: any) => ({
+      id: r.message_id,
+      subject: r.subject,
+      body: r.body,
+      db_id: r.id
+    }));
 
     // Pending tasks context for update detection
     const { data: pendingTasksData } = await supabaseAdmin.from("tasks")
@@ -404,11 +436,23 @@ Deno.serve(async (req: Request) => {
     const remainingCount = unprocessedEmails.length - batchIds.length;
     const isPageDone = remainingCount === 0;
 
+    // Mark processed emails as done in raw_emails
+    if (unprocessedEmails.length > 0) {
+      const processedDbIds = unprocessedEmails.map((r: any) => r.db_id);
+      await supabaseAdmin.from("raw_emails").update({ status: "processed" }).in("id", processedDbIds);
+    }
+    
+    // Check if there are more pending raw emails left to process
+    const { count: rawRemaining } = await supabaseAdmin.from("raw_emails")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "pending");
+
     // ── HANDOFF TO BACKGROUND WORKER ──
-    console.log(`[HANDOFF] isPageDone=${isPageDone}, nextPageToken=${nextPageToken}, remainingCount=${remainingCount}`);
-    if (isPageDone && nextPageToken) {
+    console.log(`[HANDOFF] isPageDone=${isPageDone}, nextPageToken=${nextPageToken}, rawRemaining=${rawRemaining}`);
+    if (isPageDone && (nextPageToken || (rawRemaining && rawRemaining > 0))) {
       await supabaseAdmin.from("user_settings").update({
-        sync_page_token: nextPageToken,
+        sync_page_token: nextPageToken || settings.sync_page_token,
         last_synced_at: new Date().toISOString(),
         sync_in_progress: false,
         sync_lock_at: null,
@@ -417,7 +461,7 @@ Deno.serve(async (req: Request) => {
       
       // Trigger Background Catchup
       await supabaseAdmin.from("sync_queue").insert({ user_id: user.id, dedup_id: `catchup_${user.id}_${Date.now()}` });
-    } else if (isPageDone && !nextPageToken) {
+    } else if (isPageDone && !nextPageToken && (!rawRemaining || rawRemaining === 0)) {
       await supabaseAdmin.from("user_settings").update({
         last_synced_at: new Date().toISOString(),
         sync_page_token: null,
