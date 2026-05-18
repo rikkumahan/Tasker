@@ -693,6 +693,9 @@ export default function App() {
         </>
       )}
 
+        </>
+      )}
+
       {/* ═══ ONBOARDING OVERLAY (New Users) ═══ */}
       {showOnboarding && (
         <div className="onboarding-overlay">
