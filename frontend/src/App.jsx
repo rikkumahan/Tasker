@@ -83,14 +83,7 @@ export default function App() {
   const [mindInput, setMindInput] = useState('');
   const [mindLoading, setMindLoading] = useState(false);
 
-  // ── Onboarding State ──
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingChat, setOnboardingChat] = useState([]);
-  const [onboardingInput, setOnboardingInput] = useState('');
-  const [onboardingChatLoading, setOnboardingChatLoading] = useState(false);
-  const [synthesizing, setSynthesizing] = useState(false);
-  const [synthesisStatus, setSynthesisStatus] = useState('');
-  const onboardingChatRef = React.useRef(null);
+
   const mindChatRef = React.useRef(null);
 
   // Store session and intervals in refs so they persist across renders and are accessible in cleanup
@@ -122,7 +115,6 @@ export default function App() {
           bootstrapUser(newSession);
         } else {
           fetchTasks(newSession);
-          checkSyncHealth(newSession);
         }
       } else {
         setTasks([]);
@@ -204,28 +196,6 @@ export default function App() {
     setLoading(false);
   };
 
-  // Dedicated recovery and freshness checker
-  // This runs EXACTLY ONCE on initial app load/auth restore.
-  const checkSyncHealth = async (sess) => {
-    if (initialSyncDoneRef.current || !sess) return;
-    initialSyncDoneRef.current = true;
-    
-    // Fetch critical health metrics
-    const { data: settings } = await supabase
-      .from('user_settings')
-      .select('user_profile, last_synced_at')
-      .eq('user_id', sess.user.id)
-      .maybeSingle();
-    
-    if (!settings || !settings.user_profile || settings.user_profile.includes('A busy professional seeking to organize')) {
-      console.log('[INFO] User needs onboarding. Showing AI Mind Center...');
-      setShowOnboarding(true);
-      setOnboardingChat([{ sender: 'ai', text: "Ayo Boss! 👋 I'm your elite Tasker AI Chief of Staff. Let's calibrate your cognitive matrix. First up — tell me who you are and what your active hustle looks like right now." }]);
-    } else if (settings.last_synced_at) {
-      console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago. Use sync button to refresh.`);
-    }
-  };
-
   const bootstrapUser = async (sess) => {
     if (onboardingTriggeredRef.current) {
       console.log('[INFO] Bootstrapping already triggered, skipping duplicate call.');
@@ -234,15 +204,17 @@ export default function App() {
     onboardingTriggeredRef.current = true;
     setLoading(true);
     try {
-        console.log('[INFO] Bootstrapping new user settings and registering push (No task extraction yet)...');
+        console.log('[INFO] Bootstrapping new user settings and registering push...');
         const providerToken = sess?.provider_token;
         const providerRefreshToken = sess?.provider_refresh_token;
         
-        // Pass bootstrap_only flag to triggerSync
+        // Create settings and register webhooks
         await triggerSync(sess, null, { providerToken, providerRefreshToken, bootstrap_only: true });
         
-        // Now that settings are created, check health to show the onboarding chat
-        await checkSyncHealth(sess);
+        // Immediately run first full sync to pull emails and actions!
+        console.log('[INFO] Starting first full sync...');
+        await triggerSync(sess);
+        await fetchTasks(sess);
     } catch (e) {
         console.error("Bootstrap error", e);
     }
@@ -306,68 +278,7 @@ export default function App() {
 
   const handleManualSync = () => triggerSync();
 
-  // ── ONBOARDING DYNAMIC CHAT HANDLER ──
-  const handleOnboardingSubmit = async () => {
-    const input = onboardingInput.trim();
-    if (!input || onboardingChatLoading || synthesizing) return;
 
-    setOnboardingInput('');
-    const newUserMessage = { sender: 'user', text: input };
-    const updatedChat = [...onboardingChat, newUserMessage];
-    
-    // Optimistically add user bubble
-    setOnboardingChat(updatedChat);
-    setOnboardingChatLoading(true);
-
-    try {
-      const sess = sessionRef.current;
-      const { data, error } = await supabase.functions.invoke('synthesize_profile', {
-        body: { mode: 'onboarding', chat_history: updatedChat },
-        headers: {
-          apikey: SUPABASE_KEY,
-          Authorization: `Bearer ${sess.access_token}`
-        }
-      });
-
-      if (error) throw error;
-      
-      const { finished, ai_response } = data;
-
-      if (!finished) {
-        // AI needs more information. Add response to chat and continue.
-        setOnboardingChat(prev => [...prev, { sender: 'ai', text: ai_response }]);
-        setOnboardingChatLoading(false);
-      } else {
-        // AI is satisfied! Finalize process.
-        setOnboardingChat(prev => [...prev, { sender: 'ai', text: ai_response }]);
-        setOnboardingChatLoading(false);
-        
-        // Trigger full synthesis overlay
-        setSynthesizing(true);
-        setSynthesisStatus('Calibrating extraction filters...');
-        await new Promise(r => setTimeout(r, 1200));
-        setSynthesisStatus('AI Mind initialized! ⚡');
-        await new Promise(r => setTimeout(r, 800));
-
-        // Now trigger the actual first sync
-        setShowOnboarding(false);
-        setSynthesizing(false);
-        await triggerSync(sess);
-        await fetchTasks(sess);
-      }
-    } catch (e) {
-      console.error('Synthesis error:', e);
-      setOnboardingChatLoading(false);
-      setSynthesizing(true);
-      setSynthesisStatus('Something went wrong. Proceeding with defaults...');
-      await new Promise(r => setTimeout(r, 1500));
-      setShowOnboarding(false);
-      setSynthesizing(false);
-      const sess = sessionRef.current;
-      await triggerSync(sess);
-      await fetchTasks(sess);
-    }
-  };
 
   // ── AI MIND OPEN CHAT HANDLER ──
   const handleMindChat = async () => {
@@ -561,9 +472,7 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {!showOnboarding && (
-        <>
-          <header className="app-header">
+      <header className="app-header">
             <div className="header-info" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
               <img src="/icons/logo.png" alt="Tasker AI Logo" className="app-header-logo" />
               <div>
@@ -716,52 +625,9 @@ export default function App() {
         </>
       )}
 
-        </>
-      )}
 
-      {/* ═══ ONBOARDING OVERLAY (New Users) ═══ */}
-      {showOnboarding && (
-        <div className="onboarding-overlay">
-          <div className="onboarding-card">
-            <h1>Welcome to Tasker AI</h1>
-            <p className="subtitle">Let's calibrate your personal AI mind in 3 quick steps</p>
 
-            {synthesizing ? (
-              <div className="synthesis-loading">
-                <div className="synthesis-orb" />
-                <p className="synthesis-status">{synthesisStatus}</p>
-              </div>
-            ) : (
-              <>
-                <div className="onboarding-chat-area" ref={onboardingChatRef}>
-                  {onboardingChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
-                  {onboardingChatLoading && (
-                    <div className="chat-bubble ai thinking-bubble">
-                      <span className="dot pulse-dot">•</span>
-                      <span className="dot pulse-dot" style={{ animationDelay: '0.2s' }}>•</span>
-                      <span className="dot pulse-dot" style={{ animationDelay: '0.4s' }}>•</span>
-                    </div>
-                  )}
-                </div>
 
-                <div className="onboarding-input-area">
-                  <input
-                    className="onboarding-input"
-                    value={onboardingInput}
-                    onChange={e => setOnboardingInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleOnboardingSubmit()}
-                    placeholder={onboardingChatLoading ? "Calibrating..." : "Speak to your Chief of Staff..."}
-                    disabled={onboardingChatLoading}
-                  />
-                  <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || onboardingChatLoading}>
-                    Send <Send size={14} style={{ marginLeft: '4px' }} />
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
