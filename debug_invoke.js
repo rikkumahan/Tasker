@@ -9,7 +9,7 @@ async function testSync() {
     if (l.startsWith('SUPABASE_URL=')) url = l.split('=')[1].trim();
   });
 
-  const TEST_USER_ID = "e0e86171-a2f1-48de-b88e-592813016c3e";
+  const TEST_USER_ID = "c5fc30a2-4545-4155-a97f-76d76fc8067f";
 
   console.log('--- STARTING PROPER DEBUG OPERATION ---');
   console.log('Target Edge Function:', `${url}/functions/v1/sync`);
