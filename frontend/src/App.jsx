@@ -96,6 +96,8 @@ export default function App() {
   const onboardingTriggeredRef = React.useRef(false); // Prevent double onboarding from race conditions
 
   useEffect(() => {
+    if (!supabase) return;
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       sessionRef.current = session;
       setSession(session);
@@ -465,6 +467,32 @@ export default function App() {
 
     return a.localeCompare(b);
   });
+
+  if (!supabase) {
+    return (
+      <div className="auth-container">
+        <div className="auth-card glass-panel" style={{ maxWidth: '480px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+          <div className="auth-header">
+            <div className="auth-icon-wrapper" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+              <AlertCircle size={32} style={{ color: '#ef4444' }} />
+            </div>
+            <h1 style={{ color: '#f87171' }}>Configuration Error</h1>
+            <p>Supabase connection keys are missing in the application environment.</p>
+          </div>
+
+          <div style={{ textAlign: 'left', background: 'rgba(0, 0, 0, 0.2)', padding: '1.25rem', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)', marginBottom: '1.5rem', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+            <div style={{ color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Missing Vercel Environment Variables:</div>
+            <div style={{ color: '#ef4444', fontWeight: 'bold' }}>• VITE_SUPABASE_URL</div>
+            <div style={{ color: '#ef4444', fontWeight: 'bold' }}>• VITE_SUPABASE_ANON_KEY</div>
+          </div>
+
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5', textAlign: 'left' }}>
+            To fix this, go to your <strong>Vercel Project Settings ➔ Environment Variables</strong>, add the values for these keys, and redeploy.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!session) {
     return <Auth supabase={supabase} />
