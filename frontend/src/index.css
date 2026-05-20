@@ -293,6 +293,69 @@ body {
   text-transform: uppercase;
 }
 
+/* ── Industry Action Log Tokens ── */
+.impact-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.impact-badge.high {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.impact-badge.medium {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.impact-badge.low {
+  background: rgba(156, 163, 175, 0.2);
+  color: #d1d5db;
+  border: 1px solid rgba(156, 163, 175, 0.3);
+}
+
+.action-chip {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid var(--gl-border);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.action-chip.approval_required { border-color: var(--accent); color: var(--accent); }
+.action-chip.blocker { border-color: var(--red-color); color: #fca5a5; }
+.action-chip.reply_needed { border-color: var(--yellow-color); color: #fcd34d; }
+
+.sender-org {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.escalation-risk-banner {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--red-color);
+  font-size: 0.85rem;
+  color: #fca5a5;
+  border-radius: 0 4px 4px 0;
+}
+
 /* Special styling for Check Out Mail */
 .category-accordion.checkout-mail {
   border-color: rgba(96, 165, 250, 0.3);

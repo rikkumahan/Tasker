@@ -411,8 +411,19 @@ Deno.serve(async (req: Request) => {
 
     // Combine ghost tasks with any real tasks before upsert
     const allTasksToUpsert = [...finalTasks, ...ghostTasks].map(t => ({
-      ...t,
-      status: t.status || "pending"
+      title: t.title,
+      summary: t.summary,
+      deadline: t.deadline || null,
+      category: t.category,
+      status: t.status || "pending",
+      user_id: t.user_id,
+      source_email_id: t.source_email_id,
+      warnings: t.warnings || [],
+      action_type: t.action_type || null,
+      impact_level: t.impact_level || null,
+      sender_organization: t.sender_organization || null,
+      escalation_risk: t.escalation_risk || null,
+      suggested_reply_draft: t.suggested_reply_draft || null
     }));
     if (allTasksToUpsert.length > 0) {
       console.log(`[UPSERT] Attempting to upsert ${allTasksToUpsert.length} tasks (real: ${finalTasks.length}, ghost: ${ghostTasks.length})`);

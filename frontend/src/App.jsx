@@ -501,31 +501,50 @@ export default function App() {
     return true;
   });
 
+  const impactScore = { 'high': 3, 'medium': 2, 'low': 1, null: 0, undefined: 0 };
+
   const grouped = pendingTasks.reduce((acc, task) => {
-    const cat = task.category || 'uncategorized';
+    // Group by sender_organization if available, else fallback to category
+    const cat = task.sender_organization || task.category || 'uncategorized';
     if (!acc[cat]) {
-      acc[cat] = { tasks: [], urgency: { RED: 0, YELLOW: 0, GREEN: 0 } };
+      acc[cat] = { tasks: [], urgency: { RED: 0, YELLOW: 0, GREEN: 0 }, impactScore: 0 };
     }
 
     const u = getUrgencyLevel(task.deadline);
     acc[cat].tasks.push(task);
     acc[cat].urgency[u]++;
+    acc[cat].impactScore += impactScore[task.impact_level] || 0;
 
     return acc;
   }, {});
 
-  // Sort categories: Academic first, then by urgency (RED > YELLOW), Check_Out_Mail at the very bottom
+  // Sort tasks within each group by impact level (High > Medium > Low)
+  Object.keys(grouped).forEach(cat => {
+    grouped[cat].tasks.sort((a, b) => {
+      const scoreA = impactScore[a.impact_level] || 0;
+      const scoreB = impactScore[b.impact_level] || 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      // fallback to deadline sorting
+      if (a.deadline && b.deadline) {
+        return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
+      }
+      if (a.deadline) return -1;
+      if (b.deadline) return 1;
+      return 0;
+    });
+  });
+
+  // Sort categories by aggregate impact score and urgency
   const categoryKeys = Object.keys(grouped).sort((a, b) => {
-    const aIsAcad = a.toLowerCase().includes('academic');
-    const bIsAcad = b.toLowerCase().includes('academic');
     const aIsCheckOut = a === 'Check_Out_Mail';
     const bIsCheckOut = b === 'Check_Out_Mail';
 
-    if (aIsAcad && !bIsAcad) return -1;
-    if (!aIsAcad && bIsAcad) return 1;
-
     if (aIsCheckOut && !bIsCheckOut) return 1;
     if (!aIsCheckOut && bIsCheckOut) return -1;
+
+    if (grouped[a].impactScore !== grouped[b].impactScore) {
+      return grouped[b].impactScore - grouped[a].impactScore;
+    }
 
     const aUrgency = grouped[a].urgency;
     const bUrgency = grouped[b].urgency;
@@ -633,7 +652,7 @@ export default function App() {
               {expandedCategories[cat] && (
                 <div className="accordion-body">
                    {grouped[cat].tasks.map(task => (
-                    <TaskCard
+                    <ActionCard
                       key={task.id}
                       task={task}
                       onToggleStar={toggleStar}
@@ -747,7 +766,7 @@ export default function App() {
   );
 }
 
-function TaskCard({ task, onToggleStar, onComplete, onTaskDelete, gmailEmail }) {
+function ActionCard({ task, onToggleStar, onComplete, onTaskDelete, gmailEmail }) {
   const [expanded, setExpanded] = useState(false);
   const urgency = getUrgencyLevel(task.deadline);
 
@@ -758,9 +777,23 @@ function TaskCard({ task, onToggleStar, onComplete, onTaskDelete, gmailEmail }) 
     >
       <div className="task-main">
         <div className="task-content">
-          <div className="task-header-row">
-            <h3 className="task-title">{task.title}</h3>
-            {task.course && <span className="course-badge">{task.course}</span>}
+          <div className="task-header-row" style={{ flexWrap: 'wrap' }}>
+            {task.action_type && (
+              <span className={`action-chip ${task.action_type}`}>
+                {task.action_type.replace('_', ' ')}
+              </span>
+            )}
+            <h3 className="task-title" style={{ display: 'inline-block', marginRight: '8px' }}>
+              {task.title}
+            </h3>
+            {task.impact_level && (
+              <span className={`impact-badge ${task.impact_level}`}>
+                {task.impact_level} Impact
+              </span>
+            )}
+            {task.sender_organization && (
+              <span className="sender-org">🏢 {task.sender_organization}</span>
+            )}
           </div>
           <div className="task-meta">
             <span className={`task-deadline`}>{formatDeadline(task.deadline, task.end_time)}</span>
@@ -780,7 +813,7 @@ function TaskCard({ task, onToggleStar, onComplete, onTaskDelete, gmailEmail }) 
           <button
             className="action-btn delete-btn"
             onClick={(e) => onTaskDelete(e, task)}
-            title="Delete task"
+            title="Delete action"
           >
             <Trash2 size={18} />
           </button>
@@ -797,7 +830,33 @@ function TaskCard({ task, onToggleStar, onComplete, onTaskDelete, gmailEmail }) 
       {expanded && (
         <div className="task-details">
           <p>{task.summary || 'No summary available.'}</p>
-          {task.location && <p className="location">📍 {task.location}</p>}
+          
+          {task.escalation_risk && (
+            <div className="escalation-risk-banner">
+              <strong>Escalation Risk:</strong> {task.escalation_risk}
+            </div>
+          )}
+
+          {task.suggested_reply_draft?.options && (
+            <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {task.suggested_reply_draft.options.map((opt, i) => (
+                <button 
+                  key={i} 
+                  className="mind-send-btn" 
+                  style={{ fontSize: '0.75rem', padding: '0.4rem 0.8rem' }}
+                  onClick={(e) => {
+                     e.stopPropagation();
+                     navigator.clipboard.writeText(opt.text);
+                     alert("Draft copied to clipboard!");
+                  }}
+                  title="Copy draft to clipboard"
+                >
+                  📝 {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {task.source_email_id && (
             <a
               href={gmailEmail 

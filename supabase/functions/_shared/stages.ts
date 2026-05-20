@@ -155,12 +155,14 @@ Rules:
 - If an email is informational or news (but NOT spam) -> extract it normally. Do NOT force it into Check_Out_Mail. The categorizer will create a dynamic category for it (e.g., "Newsletters", "Updates").
 - If the user's extraction overrides specify tracking a specific sender or topic, ALWAYS extract those.
 - CRITICAL: You MUST include the exact "source_email_id" field for every single item you extract.
+- NEW SCHEMA FIELDS: You must extract "action_type" (approval_required | reply_needed | blocker | event | delegated_tracking | awareness), "impact_level" (high | medium | low), "sender_organization" (normalized company name, or null), and "escalation_risk" (consequences of ignoring, or null).
+- SUGGESTED DRAFTS: For "approval_required" and "reply_needed" actions, provide 2-3 "suggested_reply_draft" options. Otherwise, null.
 ${pendingContext}
 ${actionContext}
 
-Format: New task: { "title": "...", "deadline": "ISO8601 or null", "summary": "...", "source_email_id": "xxx" }
+Format: New task: { "title": "...", "deadline": "ISO8601 or null", "summary": "...", "source_email_id": "xxx", "category": "normalized project/client name", "action_type": "...", "impact_level": "...", "sender_organization": "...", "escalation_risk": "...", "suggested_reply_draft": { "options": [{ "label": "...", "text": "..." }] } }
 Update only: { "is_update": true, "existing_task_id": "uuid", "deadline": "ISO8601", "summary": "Updated: ...", "source_email_id": "xxx" }
-Check_Out_Mail: { "title": "...", "deadline": "ISO8601 or null", "summary": "...", "source_email_id": "xxx", "category": "Check_Out_Mail" }
+Check_Out_Mail: { "title": "...", "deadline": "ISO8601 or null", "summary": "...", "source_email_id": "xxx", "category": "Check_Out_Mail", "action_type": "awareness", "impact_level": "low", "sender_organization": null, "escalation_risk": null, "suggested_reply_draft": null }
 
 EMAILS:
 ${batchedText}`;
