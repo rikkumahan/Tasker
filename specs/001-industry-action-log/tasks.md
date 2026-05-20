@@ -81,17 +81,19 @@
 
 ---
 
-## Phase 6: User Story 4 - Onboarding Calibrated for Corporate Context (Priority: P3)
+## Phase 6: Raw Email Sender Tracking (Priority: P2)
 
-**Goal**: Ensure new users get asked about their corporate role, stakeholders, and priorities to seed a high-quality persona.
+**Goal**: Store the sender of each email in `raw_emails` and pass it to the LLM during task extraction so that `sender_organization` is extracted with high accuracy.
 
-**Independent Test**: Verify that the onboarding conversation asks at least one question about organizational role and one about key clients.
+**Independent Test**: Verify that incoming emails store the sender address in `raw_emails.sender` and that the LLM extracts the correct `sender_organization` from it.
 
-### Implementation for User Story 4
+### Implementation for Raw Email Sender Tracking
 
-- [x] T009 [US4] Update onboarding synthesis prompt to collect corporate role, key clients, and priorities in `supabase/functions/synthesize_profile/index.ts`
+- [ ] T009 Apply database migration to add `sender` column to `raw_emails` table.
+- [ ] T012 Update `rawEmailInserts` and `unprocessedEmails` mapping in `supabase/functions/sync/index.ts` to save and select the `sender` field.
+- [ ] T013 Update `extractRawTasks` in `supabase/functions/_shared/stages.ts` to include `From: ${e.sender}` in the text sent to the LLM.
 
-**Checkpoint**: All user stories should now be independently functional
+**Checkpoint**: Raw Email Sender Tracking complete and verified.
 
 ---
 
@@ -120,12 +122,12 @@
 - **User Story 1 (P1)**: Can start after Foundational (Phase 2) - No dependencies on other stories
 - **User Story 2 (P2)**: Can start after Foundational (Phase 2) - Depends on US1 UI changes to exist (ActionCard)
 - **User Story 3 (P2)**: Can start after Foundational (Phase 2) - Depends on US1 UI changes to exist (Action Log layout)
-- **User Story 4 (P3)**: Can start after Foundational (Phase 2) - No dependencies
+- **Raw Email Sender Tracking (P2)**: Can start after Foundational (Phase 2) - Depends on US1 sync function mapping.
 
 ### Parallel Opportunities
 
 - T003, T004, T005 can all be implemented in parallel by different developers.
-- US4 (T009) can be worked on completely in parallel to US1/US2/US3 frontend/backend changes.
+- T009, T012, and T013 can be worked on in parallel to frontend UI polish changes.
 
 ---
 

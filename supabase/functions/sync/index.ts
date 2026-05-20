@@ -270,6 +270,7 @@ Deno.serve(async (req: Request) => {
         subject: e.subject,
         snippet: e.body.substring(0, 500),
         body: e.body,
+        sender: e.sender,
         received_at: e.date ? new Date(e.date).toISOString() : new Date().toISOString(),
         status: "pending"
       }));
@@ -301,6 +302,7 @@ Deno.serve(async (req: Request) => {
       id: r.message_id,
       subject: r.subject,
       body: r.body,
+      sender: r.sender,
       db_id: r.id
     }));
 

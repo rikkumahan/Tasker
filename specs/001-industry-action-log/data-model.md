@@ -86,9 +86,27 @@ Communication Style: [formal / balanced / direct]
 ```
 
 ### Update Trigger
-- Written on onboarding completion (`synthesize_profile` with mode=`onboarding`)
 - Updated on open chat commands (`synthesize_profile` with mode=`chat`)
 - Read by `extractRawTasks` in `stages.ts` on every sync to calibrate action type weights
+
+---
+
+## Entity 4: Raw Emails Queue (`raw_emails` table)
+
+Repurposed queue to track incoming emails. This table is updated with a new column to store the sender address.
+
+### Schema Attributes
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `id` | uuid | NO | Primary key |
+| `user_id` | uuid | YES | FK to auth.users |
+| `message_id` | text | NO | Gmail message ID |
+| `subject` | text | YES | Email subject |
+| `body` | text | YES | Email body |
+| `snippet` | text | YES | Email snippet |
+| `sender` | text | YES | **NEW**: Sender's email address / From header |
+| `received_at` | timestamptz | YES | Email received timestamp |
+| `status` | text | YES | pending / processed |
 
 ---
 
@@ -102,6 +120,9 @@ ALTER TABLE public.tasks
   ADD COLUMN IF NOT EXISTS sender_organization text,
   ADD COLUMN IF NOT EXISTS escalation_risk   text,
   ADD COLUMN IF NOT EXISTS suggested_reply_draft jsonb;
+
+ALTER TABLE public.raw_emails
+  ADD COLUMN IF NOT EXISTS sender            text;
 
 -- Optional: add check constraints for enum values
 ALTER TABLE public.tasks

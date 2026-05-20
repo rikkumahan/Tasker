@@ -74,11 +74,9 @@ specs/001-industry-action-log/
 ```text
 supabase/functions/
 ├── _shared/
-│   └── stages.ts          # MODIFY: extractRawTasks prompt + output mapping
-├── sync/
-│   └── index.ts           # MODIFY: persist new fields to DB
-└── synthesize_profile/
-    └── index.ts           # MODIFY: corporate onboarding prompts
+│   └── stages.ts          # MODIFY: extractRawTasks prompt to include From header
+└── sync/
+    └── index.ts           # MODIFY: save/retrieve sender field from raw_emails and persist to DB
 
 frontend/src/
 ├── App.jsx                # MODIFY: ActionCard component + Action Log layout

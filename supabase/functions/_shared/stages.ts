@@ -3,6 +3,16 @@ import { getNextKey, getPersonaKey } from "./keys.ts";
 import { prePassRedact, shannonEntropy, luhnValid } from "./pii.ts";
 import { sleep, getSeason, lenientParseArray } from "./utils.ts";
 
+function parseSender(senderStr: string) {
+  if (!senderStr) return { name: "", email: "", domain: "" };
+  const emailRegex = /<([^>]+)>/;
+  const match = senderStr.match(emailRegex);
+  const email = match ? match[1].trim() : senderStr.trim();
+  const name = match ? senderStr.replace(emailRegex, "").replace(/"/g, "").trim() : "";
+  const domain = email.includes("@") ? email.split("@")[1].trim() : "";
+  return { name, email, domain };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // STAGE 1: PERSONA-AWARE EXTRACTION
 // Reads user_profile + custom_extraction_rules from user_settings
@@ -27,7 +37,14 @@ export const extractRawTasks = async (
     let safeSubject = e.subject || "";
 
     try {
-      const fullText = `Subject: ${safeSubject}\nBody: ${safeBody}`;
+      const { name: senderName, domain: senderDomain } = parseSender(e.sender);
+      const fromLine = senderDomain
+        ? `From: ${senderName || "Unknown"} (Domain: ${senderDomain})`
+        : senderName
+        ? `From: ${senderName}`
+        : "From: Unknown";
+
+      const fullText = `${fromLine}\nSubject: ${safeSubject}\nBody: ${safeBody}`;
 
       // STAGE 1: Pre-Pass Regex Vault — permanent erasure before tokenization
       const stage1 = prePassRedact(fullText);

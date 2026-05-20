@@ -59,22 +59,7 @@ A corporate professional is managing 4 active projects simultaneously. Instead o
 2. **Given** a user has completed a project and its emails are older than 30 days with no new activity, **When** they view the Action Log, **Then** that project cluster is collapsed by default but still accessible.
 3. **Given** a new email arrives about an existing active cluster, **When** the sync processes it, **Then** the new Action Card is appended to the correct cluster without creating a duplicate cluster.
 
----
 
-### User Story 4 — Onboarding Calibrated for Corporate Context (Priority: P3)
-
-A new corporate professional signs up for Tasker. During onboarding, the AI asks questions appropriate to their organizational role — who their key clients and stakeholders are, what types of decisions they typically make via email, and which senders should always surface at the top. The onboarding output is a corporate professional profile, not a generic task preference.
-
-**Why this priority**: The onboarding profile directly determines extraction quality. A poorly calibrated profile produces generic action items. A well-calibrated corporate profile produces highly relevant, persona-aware action insights.
-
-**Independent Test**: Can be tested by verifying that the onboarding conversation asks at least one question about organizational role, one about key clients or stakeholders, and one about what types of email actions the user most needs to track.
-
-**Acceptance Scenarios**:
-
-1. **Given** a new user completes onboarding, **When** their profile is saved, **Then** the profile includes their organizational role, key client or stakeholder names, and at least one custom extraction rule.
-2. **Given** a user identifies themselves as a manager, **When** Tasker extracts action items from their inbox, **Then** delegation-type emails are consistently surfaced as high-priority action items.
-
----
 
 ### Edge Cases
 
@@ -97,7 +82,7 @@ A new corporate professional signs up for Tasker. During onboarding, the AI asks
 - **FR-005**: The system MUST generate 2–3 contextually relevant reply draft options for all Action Cards of type `Reply Needed` or `Approval Required`.
 - **FR-006**: The system MUST group Action Cards by client or project cluster based on sender organization and contextual signals in the email body.
 - **FR-007**: The system MUST sort Action Cards within each cluster by impact level, with `High` items appearing first.
-- **FR-008**: The onboarding conversation MUST collect the user's organizational role, key clients or stakeholders, and preferred action extraction priorities before the first sync.
+- **FR-008**: The system MUST record the email sender (`From` header) in the `raw_emails` table and include it in the email block passed to the LLM extraction prompt to ensure precise extraction of `sender_organization`.
 - **FR-009**: The system MUST continue to apply the existing Zero-Trust Privacy Shield (3-stage PII pipeline) to all emails before any action insight extraction occurs.
 - **FR-010**: The existing sync pipeline (manual sync + background worker) MUST be reused without architectural changes — only the extraction prompt and data model output are modified.
 
