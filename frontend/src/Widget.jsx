@@ -9,7 +9,8 @@ const supabase = createClient(
 
 function getUrgencyLevel(deadline) {
   if (!deadline) return 'GREEN';
-  const d = new Date(deadline.replace('Z', ''));
+  const d = new Date(deadline);
+  if (isNaN(d.getTime())) return 'GREEN';
   if (isPast(d) && !isToday(d)) return 'RED';
   if (isToday(d)) return 'RED';
   if (differenceInDays(startOfDay(d), startOfDay(new Date())) <= 2) return 'YELLOW';
@@ -29,10 +30,17 @@ export default function Widget() {
       if (session) loadTasks(session);
       else setLoading(false);
     });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) loadTasks(session);
+      else { setTopTasks([]); setLoading(false); }
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   const loadTasks = async (sess) => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('tasks')
       .select('id, title, deadline, category, starred')
       .eq('user_id', sess.user.id)
@@ -41,8 +49,9 @@ export default function Widget() {
       .order('deadline', { ascending: true })
       .limit(5);
 
-    if (data) {
-      // Filter to only RED/YELLOW — no GREEN clutter
+    if (error) {
+      console.error('[Widget] Failed to load tasks:', error.message);
+    } else if (data) {
       const urgent = data.filter(t => getUrgencyLevel(t.deadline) !== 'GREEN');
       setTopTasks(urgent.slice(0, 3));
     }
@@ -85,7 +94,7 @@ export default function Widget() {
         <div style={styles.taskList}>
           {topTasks.map(task => {
             const urgency = getUrgencyLevel(task.deadline);
-            const d = new Date(task.deadline.replace('Z', ''));
+            const d = new Date(task.deadline);
             const label = isToday(d) ? 'Today' : isTomorrow(d) ? 'Tomorrow' : format(d, 'MMM d');
             return (
               <div key={task.id} style={styles.taskCard}>

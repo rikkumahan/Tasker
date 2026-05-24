@@ -210,7 +210,13 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const listData = await listRes.json();
+    let listData: any;
+    try {
+      listData = await listRes.json();
+    } catch {
+      console.error("[GMAIL] List response is not valid JSON, status:", listRes.status);
+      throw new Error("Gmail API returned non-JSON response");
+    }
     const messages = listData.messages || [];
     const nextPageToken: string | null = listData.nextPageToken || null;
 
@@ -449,8 +455,9 @@ Deno.serve(async (req: Request) => {
       .eq("status", "pending");
 
     // ── HANDOFF TO BACKGROUND WORKER ──
-    console.log(`[HANDOFF] isPageDone=${isPageDone}, nextPageToken=${nextPageToken}, rawRemaining=${rawRemaining}`);
-    if (isPageDone && (nextPageToken || (rawRemaining && rawRemaining > 0))) {
+    const safeRawRemaining = rawRemaining ?? 0;
+    console.log(`[HANDOFF] isPageDone=${isPageDone}, nextPageToken=${nextPageToken}, rawRemaining=${safeRawRemaining}`);
+    if (isPageDone && (nextPageToken || safeRawRemaining > 0)) {
       await supabaseAdmin.from("user_settings").update({
         sync_page_token: nextPageToken || settings.sync_page_token,
         last_synced_at: new Date().toISOString(),
@@ -461,7 +468,7 @@ Deno.serve(async (req: Request) => {
       
       // Trigger Background Catchup
       await supabaseAdmin.from("sync_queue").insert({ user_id: user.id, dedup_id: `catchup_${user.id}_${Date.now()}` });
-    } else if (isPageDone && !nextPageToken && (!rawRemaining || rawRemaining === 0)) {
+    } else if (isPageDone && !nextPageToken && safeRawRemaining === 0) {
       await supabaseAdmin.from("user_settings").update({
         last_synced_at: new Date().toISOString(),
         sync_page_token: null,

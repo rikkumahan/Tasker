@@ -170,6 +170,7 @@ ${batchedText}`;
 
   let exRes: Response | null = null;
   let attemptsLeft = 3;
+  let rateLimitHit = false;
   while (attemptsLeft > 0 && !exRes) {
     const key = getNextKey();
     try {
@@ -179,20 +180,26 @@ ${batchedText}`;
         body: JSON.stringify({ model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "user", content: prompt }] }),
         signal: controller.signal
       });
-      if (res.status === 429) { attemptsLeft--; await sleep(500); continue; }
+      if (res.status === 429) { rateLimitHit = true; attemptsLeft--; await sleep(500); continue; }
       exRes = res;
     } catch { attemptsLeft--; }
   }
   clearTimeout(timeoutId);
 
-  if (!exRes) return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit: true };
+  if (!exRes) return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit };
 
   if (!exRes.ok) {
     console.error(`[LLM API Error] Status: ${exRes.status}`);
     return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit: exRes.status === 429 };
   }
 
-  const exData = await exRes.json();
+  let exData: any;
+  try {
+    exData = await exRes.json();
+  } catch {
+    console.error("[LLM API] Response body is not valid JSON");
+    return { rawTasks: [], successfullyProcessedIds: [], rateLimitHit: false };
+  }
   let rawContent = exData.choices?.[0]?.message?.content || "";
 
   // ── RE-HYDRATION MODULE ──
@@ -205,14 +212,13 @@ ${batchedText}`;
   const parsed = lenientParseArray(rawContent);
 
   if (parsed) {
+    const emailIdSet = new Set(emailsToProcess.map(e => e.id));
     const rawTasks = parsed.filter((t: any) => {
       const sourceId = t.source_email_id;
-      // Validate source_email_id is a non-empty string and not "None" or similar invalid values
       if (!sourceId || typeof sourceId !== 'string' || sourceId.trim() === '' || sourceId.toLowerCase() === 'none') {
         return false;
       }
-      const cleanId = sourceId.trim();
-      return emailsToProcess.some(e => cleanId === e.id);
+      return emailIdSet.has(sourceId.trim());
     });
     return { rawTasks, successfullyProcessedIds: emailsToProcess.map(e => e.id), rateLimitHit: false };
   }
@@ -306,7 +312,11 @@ JSON ONLY format (DO NOT WRAP IN BACKTICKS):
     rawContent = rawContent.replace(/```json/g, "").replace(/```/g, "").trim();
     const match = rawContent.match(/\{[\s\S]*\}/);
     if (match) {
-      const parsed = JSON.parse(match[0]);
+      let parsed: any;
+      try { parsed = JSON.parse(match[0]); } catch {
+        console.error("[PERSONA] LLM returned invalid JSON, skipping evolution");
+        return { updatedProfile: currentProfile, updatedCategories: currentCategories };
+      }
       const updatedProfile = parsed.user_profile || currentProfile;
       const evolvedCategories = parsed.categories || currentCategories;
 
@@ -380,7 +390,11 @@ export const categorizeTasks = async (
 
         const match = content.match(/\[[\s\S]*\]/);
         if (match) {
-          const categoryArray = JSON.parse(match[0]);
+          let categoryArray: any[];
+          try { categoryArray = JSON.parse(match[0]); } catch {
+            console.error("[STAGE 3] LLM returned invalid JSON for category mapping");
+            categoryArray = [];
+          }
           // Convert array format to mapping for backward compatibility
           categoryArray.forEach((item: any) => {
             if (item.task && item.category && item.confidence !== undefined) {
@@ -442,14 +456,20 @@ export const categorizeTasks = async (
       normalizedCat = "Check_Out_Mail";
     } else if (!currentCategories.includes(normalizedCat)) {
       // A new category was proposed by Stage 3
-      // We accept it, but do a quick sanity check to make sure it's not a hallucination or an entire block of text
-      const isMeaningful = normalizedCat.length > 2 && normalizedCat.length < 50 && normalizedCat === normalizedCat.trim();
+      const isMeaningful = normalizedCat.length > 2 && normalizedCat.length < 50 && normalizedCat.trim() === normalizedCat;
       if (isMeaningful) {
-        currentCategories.push(normalizedCat);
-        await supabaseAdmin.from("user_settings").update({ categories: currentCategories }).eq("id", settingsId);
+        // Re-fetch to merge with any concurrent evolvePersonaFromTasks writes
+        const { data: freshSettings } = await supabaseAdmin.from("user_settings").select("categories").eq("id", settingsId).single();
+        const latestCats: string[] = freshSettings?.categories || currentCategories;
+        if (!latestCats.includes(normalizedCat)) {
+          const merged = [...new Set([...latestCats, normalizedCat])];
+          await supabaseAdmin.from("user_settings").update({ categories: merged }).eq("id", settingsId);
+          currentCategories = merged;
+        } else {
+          currentCategories = latestCats;
+        }
         console.log(`[STAGE 3] New semantic cluster added: "${normalizedCat}"`);
       } else {
-        // Invalid category proposal, fall back to Check_Out_Mail for safety
         normalizedCat = "Check_Out_Mail";
       }
     }

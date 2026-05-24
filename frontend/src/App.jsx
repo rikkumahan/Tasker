@@ -217,7 +217,8 @@ export default function App() {
       .eq('user_id', sess.user.id)
       .maybeSingle();
     
-    if (!settings || !settings.user_profile || settings.user_profile.includes('A busy professional seeking to organize')) {
+    const DEFAULT_PROFILE = "A busy professional seeking to organize their schedule, extract actionable tasks from communications, and manage deadlines efficiently.";
+    if (!settings || !settings.user_profile || settings.user_profile === DEFAULT_PROFILE) {
       console.log('[INFO] User needs onboarding. Showing AI Mind Center...');
       setShowOnboarding(true);
       setOnboardingChat([{ sender: 'ai', text: "Ayo Boss! 👋 I'm your elite Tasker AI Chief of Staff. Let's calibrate your cognitive matrix. First up — tell me who you are and what your active hustle looks like right now." }]);

@@ -49,7 +49,10 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Parse request body ──
-    const body = await req.json();
+    let body: any;
+    try { body = await req.json(); } catch {
+      return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: corsHeaders });
+    }
     const mode: string = body.mode || "chat"; // "onboarding" | "chat"
     const chatHistory: { sender: string, text: string }[] = body.chat_history || [];
     
@@ -182,7 +185,10 @@ No markdown, no backticks. JSON only.`;
       });
     }
 
-    const groqData = await groqRes.json();
+    let groqData: any;
+    try { groqData = await groqRes.json(); } catch {
+      return new Response(JSON.stringify({ error: "AI returned non-JSON response" }), { status: 502, headers: corsHeaders });
+    }
     let rawContent = groqData.choices?.[0]?.message?.content || "";
 
     // Strip markdown backticks if present
@@ -196,7 +202,11 @@ No markdown, no backticks. JSON only.`;
       });
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    let parsed: any;
+    try { parsed = JSON.parse(jsonMatch[0]); } catch {
+      console.error("[SYNTHESIS] Regex matched but JSON.parse failed:", jsonMatch[0].substring(0, 200));
+      return new Response(JSON.stringify({ error: "AI returned malformed JSON" }), { status: 500, headers: corsHeaders });
+    }
     const isFinished = parsed.finished === true;
     const aiResponse = parsed.ai_response || "Copy that, Boss.";
 

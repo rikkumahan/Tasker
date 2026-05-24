@@ -5,7 +5,7 @@ import Widget from './Widget.jsx'
 import './index.css'
 
 // Phase 9: Lightweight pathname-based router (no dependency needed)
-const isWidgetView = window.location.pathname === '/widget';
+const isWidgetView = window.location.pathname.startsWith('/widget');
 
 // Phase 8: Auto-trigger sync if URL has ?sync=1 shortcut
 if (window.location.search.includes('sync=1')) {

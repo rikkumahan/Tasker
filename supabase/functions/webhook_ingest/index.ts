@@ -59,8 +59,9 @@ Deno.serve(async (req: Request) => {
       .insert({ user_id: userSettings.user_id, dedup_id: dedupId });
 
     if (queueError) {
-      // Unique constraint violation = already queued → safe to ignore
-      if (!queueError.message.includes("unique") && !queueError.message.includes("duplicate")) {
+      // Unique constraint violation (PG code 23505) = already queued → safe to ignore
+      const isUniqueViolation = queueError.code === "23505" || queueError.message.includes("unique") || queueError.message.includes("duplicate");
+      if (!isUniqueViolation) {
         console.error("Queue insert error:", queueError.message);
       }
     } else {

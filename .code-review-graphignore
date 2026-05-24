@@ -1,0 +1,38 @@
+# Exclude dependencies and build artifacts
+node_modules/**
+**/node_modules/**
+dist/**
+**/dist/**
+build/**
+**/build/**
+test-results/**
+**/test-results/**
+.git/**
+.vscode/**
+.agents/**
+.claude/**
+.tmp/**
+.skills_temp/**
+tmp_skills/**
+
+# Exclude lock files
+package-lock.json
+**/package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+
+# Exclude assets and media
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+*.csv
+
+# Exclude temporary and log files
+*.log
+.env
+.env.*

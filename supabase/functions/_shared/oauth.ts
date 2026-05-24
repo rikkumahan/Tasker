@@ -20,7 +20,11 @@ export async function refreshGmailToken(userId: string, refreshToken: string, su
     }),
   });
 
-  const data = await res.json();
+  let data: any;
+  try { data = await res.json(); } catch {
+    console.error("[OAUTH] Google token endpoint returned non-JSON response");
+    return null;
+  }
   if (!res.ok) {
     console.warn("[OAUTH] Refresh failed:", data);
     if (data.error === "invalid_grant") {
@@ -31,6 +35,11 @@ export async function refreshGmailToken(userId: string, refreshToken: string, su
       }).eq("user_id", userId);
       await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "GMAIL_AUTH_REVOKED", data: {} });
     }
+    return null;
+  }
+
+  if (!data.access_token) {
+    console.error("[OAUTH] Google response missing access_token:", JSON.stringify(data));
     return null;
   }
 
