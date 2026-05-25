@@ -93,6 +93,22 @@ export default function App() {
   const onboardingChatRef = React.useRef(null);
   const mindChatRef = React.useRef(null);
 
+  // ── GraphRAG & Directory State ──
+  const [activeTab, setActiveTab] = useState('tasks'); // 'tasks' | 'graph' | 'directory'
+  const [directorySubTab, setDirectorySubTab] = useState('contacts'); // 'contacts' | 'projects'
+  const [searchMode, setSearchMode] = useState('local'); // 'local' | 'global'
+  const [graphMessages, setGraphMessages] = useState([]);
+  const [graphInput, setGraphInput] = useState('');
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [activeCitation, setActiveCitation] = useState(null);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [contactsList, setContactsList] = useState([]);
+  const [projectsList, setProjectsList] = useState([]);
+  const [communitiesList, setCommunitiesList] = useState([]);
+  const [directorySearchQuery, setDirectorySearchQuery] = useState('');
+
+  const graphChatRef = React.useRef(null);
+
   // Store session and intervals in refs so they persist across renders and are accessible in cleanup
   const sessionRef = React.useRef(null);
   const pollRef = React.useRef(null);
@@ -202,6 +218,174 @@ export default function App() {
       }
     }
     setLoading(false);
+  };
+
+  const fetchDirectoryData = async () => {
+    const activeSess = session || sessionRef.current;
+    if (!supabase || !activeSess) return;
+    setDirectoryLoading(true);
+
+    try {
+      const [contactsRes, projectsRes, communitiesRes] = await Promise.all([
+        supabase.from('contacts').select('*').order('name', { ascending: true }),
+        supabase.from('projects').select('*').order('name', { ascending: true }),
+        supabase.from('community_reports').select('*').order('rating', { ascending: false })
+      ]);
+
+      if (contactsRes.data) setContactsList(contactsRes.data);
+      if (projectsRes.data) setProjectsList(projectsRes.data);
+      if (communitiesRes.data) setCommunitiesList(communitiesRes.data);
+    } catch (e) {
+      console.error('Error fetching directory data:', e);
+    } finally {
+      setDirectoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'directory') {
+      fetchDirectoryData();
+    }
+  }, [activeTab]);
+
+  const handleGraphQuery = async () => {
+    const input = graphInput.trim();
+    if (!input || graphLoading) return;
+
+    setGraphInput('');
+    setGraphMessages(prev => [...prev, { sender: 'user', text: input }]);
+    setGraphLoading(true);
+
+    try {
+      const sess = session || sessionRef.current;
+      const { data, error } = await supabase.functions.invoke('query', {
+        body: { query: input, mode: searchMode },
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${sess.access_token}`
+        }
+      });
+
+      if (error) throw error;
+
+      setGraphMessages(prev => [...prev, {
+        sender: 'ai',
+        text: data.answer || 'No response received.',
+        citations: data.citations || []
+      }]);
+    } catch (e) {
+      console.error('GraphRAG query error:', e);
+      setGraphMessages(prev => [...prev, {
+        sender: 'ai',
+        text: 'An error occurred while querying the graph intelligence engine. Please check your connection and try again.'
+      }]);
+    } finally {
+      setGraphLoading(false);
+    }
+  };
+
+  const handleQuickQuery = (queryText) => {
+    setGraphInput(queryText);
+  };
+
+  React.useEffect(() => {
+    if (graphChatRef.current) {
+      graphChatRef.current.scrollTop = graphChatRef.current.scrollHeight;
+    }
+  }, [graphMessages, graphLoading]);
+
+  const renderFormattedText = (text, citations) => {
+    if (!text) return null;
+    const lines = text.split('\n');
+    return lines.map((line, lineIdx) => {
+      let content = line;
+      const isBullet = content.trim().startsWith('- ') || content.trim().startsWith('* ');
+      if (isBullet) {
+        content = content.trim().substring(2);
+      }
+      
+      const processInline = (str) => {
+        const boldParts = str.split('**');
+        const formattedParts = [];
+        
+        boldParts.forEach((part, boldIdx) => {
+          const isBold = boldIdx % 2 === 1;
+          const parsedCitations = [];
+          const citationRegex = /\[Thread:\s*([^\]]+)\]/g;
+          let lastIndex = 0;
+          let match;
+          
+          while ((match = citationRegex.exec(part)) !== null) {
+            const matchIndex = match.index;
+            const subject = match[1].trim();
+            
+            if (matchIndex > lastIndex) {
+              parsedCitations.push(part.substring(lastIndex, matchIndex));
+            }
+            
+            const citation = (citations || []).find(c => c.subject.toLowerCase() === subject.toLowerCase());
+            
+            if (citation) {
+              parsedCitations.push(
+                <button
+                  key={`citation-${lineIdx}-${boldIdx}-${matchIndex}`}
+                  className="citation-badge"
+                  onClick={() => setActiveCitation(citation)}
+                  title={`Click to view context: ${citation.subject}`}
+                >
+                  📄 {citation.subject}
+                </button>
+              );
+            } else {
+              parsedCitations.push(
+                <span key={`citation-fallback-${lineIdx}-${boldIdx}-${matchIndex}`} className="citation-badge fallback" title={subject}>
+                  📄 {subject}
+                </span>
+              );
+            }
+            
+            lastIndex = citationRegex.lastIndex;
+          }
+          
+          if (lastIndex < part.length) {
+            parsedCitations.push(part.substring(lastIndex));
+          }
+          
+          const renderedPart = parsedCitations.length > 0 ? parsedCitations : part;
+          
+          if (isBold) {
+            formattedParts.push(<strong key={`bold-${boldIdx}`}>{renderedPart}</strong>);
+          } else {
+            formattedParts.push(renderedPart);
+          }
+        });
+        
+        return formattedParts.length > 0 ? formattedParts : str;
+      };
+      
+      const processedContent = processInline(content);
+      
+      if (isBullet) {
+        return (
+          <li key={`line-${lineIdx}`} className="chat-bullet-item" style={{ marginLeft: '1.25rem', listStyleType: 'disc' }}>
+            {processedContent}
+          </li>
+        );
+      }
+      
+      if (line.trim() === '') {
+        return <div key={`line-${lineIdx}`} className="chat-paragraph-break" style={{ height: '0.5rem' }} />;
+      }
+      
+      if (line.trim().startsWith('### ')) {
+        return <h4 key={`line-${lineIdx}`} className="chat-header-h4" style={{ marginTop: '0.75rem', marginBottom: '0.25rem', color: 'var(--copper-light)' }}>{processInline(line.trim().substring(4))}</h4>;
+      }
+      if (line.trim().startsWith('## ')) {
+        return <h3 key={`line-${lineIdx}`} className="chat-header-h3" style={{ marginTop: '1rem', marginBottom: '0.5rem', color: 'var(--accent)' }}>{processInline(line.trim().substring(3))}</h3>;
+      }
+      
+      return <p key={`line-${lineIdx}`} className="chat-text-paragraph">{processedContent}</p>;
+    });
   };
 
   // Dedicated recovery and freshness checker
@@ -537,6 +721,34 @@ export default function App() {
     return a.localeCompare(b);
   });
 
+  const filteredContacts = contactsList.filter(c => {
+    const search = directorySearchQuery.toLowerCase();
+    return (
+      (c.name || '').toLowerCase().includes(search) ||
+      (c.email || '').toLowerCase().includes(search) ||
+      (c.organization || '').toLowerCase().includes(search) ||
+      (c.bio_summary || '').toLowerCase().includes(search)
+    );
+  });
+
+  const filteredProjects = projectsList.filter(p => {
+    const search = directorySearchQuery.toLowerCase();
+    return (
+      (p.name || '').toLowerCase().includes(search) ||
+      (p.description || '').toLowerCase().includes(search) ||
+      (p.status || '').toLowerCase().includes(search)
+    );
+  });
+
+  const filteredCommunities = communitiesList.filter(c => {
+    const search = directorySearchQuery.toLowerCase();
+    return (
+      (c.title || '').toLowerCase().includes(search) ||
+      (c.summary || '').toLowerCase().includes(search) ||
+      (c.rating_explanation || '').toLowerCase().includes(search)
+    );
+  });
+
   if (!session) {
     return <Auth supabase={supabase} />
   }
@@ -549,7 +761,7 @@ export default function App() {
             <div className="header-info" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
               <img src="/icons/logo.png" alt="Tasker AI Logo" className="app-header-logo" />
               <div>
-                <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>My Tasks</h1>
+                <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>Tasker Corporate</h1>
                 <p className="date-display" style={{ margin: 0 }}>{format(new Date(), 'EEEE, MMMM do')}</p>
                 {userSettings?.user_profile && (
                   <p className="profile-subheadline" title={userSettings.user_profile} style={{ margin: '0.1rem 0 0' }}>
@@ -560,144 +772,406 @@ export default function App() {
                 )}
               </div>
             </div>
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-          {syncing ? (
-            <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }} className="pulse">
-              ⚡ Syncing...
-            </span>
-          ) : userSettings?.last_sync_error ? (
-            <div title={userSettings.last_sync_error} style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}>
-               <AlertCircle size={14} color="var(--red-color)" />
-               <span style={{ fontSize: '0.75rem', color: 'var(--red-color)', fontWeight: '600' }}>Sync Error</span>
-            </div>
-          ) : userSettings?.last_synced_at && (
-            <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-              Last synced: {format(new Date(userSettings.last_synced_at), 'h:mm a')}
-            </span>
-          )}
-          <button
-            onClick={() => { setIsMindOpen(true); if (mindChat.length === 0) setMindChat([{ sender: 'ai', text: 'Hey! I\'m your AI Mind companion. Ask me to adjust categories, track specific senders, or refine how I extract tasks from your inbox.' }]); }}
-            className="mind-btn"
-            title="AI Mind Center"
-          >
-            <Brain size={20} />
-          </button>
-          <button
-            onClick={handleManualSync}
-            className={`sync-btn ${syncing ? 'spinning' : ''}`}
-            disabled={syncing || !supabase}
-            title={syncing ? 'Sync in progress...' : 'Refresh Inbox'}
-          >
-            <RefreshCw size={20} />
-          </button>
-          
-          <button
-            onClick={() => supabase.auth.signOut()}
-            className={`sync-btn`}
-            title="Sign Out"
-          >
-            <LogOut size={20} />
-          </button>
-        </div>
-      </header>
-
-      <main className="main-content">
-        {!supabase ? (
-          <div className="empty-state">
-            <h2 style={{ color: 'var(--red-color)' }}>Connection Error</h2>
-            <p style={{ marginTop: '0.5rem' }}>Missing <code>VITE_SUPABASE_URL</code> or <code>VITE_SUPABASE_ANON_KEY</code> in your <code>frontend/.env</code> file.</p>
-          </div>
-        ) : loading && Object.keys(grouped).length === 0 ? (
-          <div className="loading-state">Loading your personalized dashboard...</div>
-        ) : categoryKeys.length === 0 ? (
-          <div className="empty-state">No pending tasks! 🎉</div>
-        ) : (
-          categoryKeys.map(cat => (
-            <div key={cat} className={`category-accordion ${cat === 'Check_Out_Mail' ? 'checkout-mail' : ''}`}>
-              <div
-                className="accordion-header"
-                onClick={() => toggleCategory(cat)}
-              >
-                <div className="accordion-title">
-                  {expandedCategories[cat] ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
-                  <h2>{cat.replace(/_/g, ' ').toUpperCase()}</h2>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              {syncing ? (
+                <span style={{ fontSize: '0.75rem', color: 'var(--yellow-color)', fontWeight: '600' }} className="pulse">
+                  ⚡ Syncing...
+                </span>
+              ) : userSettings?.last_sync_error ? (
+                <div title={userSettings.last_sync_error} style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}>
+                   <AlertCircle size={14} color="var(--red-color)" />
+                   <span style={{ fontSize: '0.75rem', color: 'var(--red-color)', fontWeight: '600' }}>Sync Error</span>
                 </div>
-                {cat !== 'Check_Out_Mail' && (
-                  <div className="urgency-indicators">
-                    <div className="urgency-box red">{grouped[cat].urgency.RED}</div>
-                    <div className="urgency-box yellow">{grouped[cat].urgency.YELLOW}</div>
-                    <div className="urgency-box green">{grouped[cat].urgency.GREEN}</div>
+              ) : userSettings?.last_synced_at && (
+                <span className="last-synced-text" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  Last synced: {format(new Date(userSettings.last_synced_at), 'h:mm a')}
+                </span>
+              )}
+              <button
+                onClick={() => { setIsMindOpen(true); if (mindChat.length === 0) setMindChat([{ sender: 'ai', text: 'Hey! I\'m your AI Mind companion. Ask me to adjust categories, track specific senders, or refine how I extract tasks from your inbox.' }]); }}
+                className="mind-btn"
+                title="AI Mind Center"
+              >
+                <Brain size={20} />
+              </button>
+              <button
+                onClick={handleManualSync}
+                className={`sync-btn ${syncing ? 'spinning' : ''}`}
+                disabled={syncing || !supabase}
+                title={syncing ? 'Sync in progress...' : 'Refresh Inbox'}
+              >
+                <RefreshCw size={20} />
+              </button>
+              
+              <button
+                onClick={() => supabase.auth.signOut()}
+                className={`sync-btn`}
+                title="Sign Out"
+              >
+                <LogOut size={20} />
+              </button>
+            </div>
+          </header>
+
+          <div className="app-tabs">
+            <button
+              className={`tab-btn ${activeTab === 'tasks' ? 'active' : ''}`}
+              onClick={() => setActiveTab('tasks')}
+            >
+              📋 Tasks View
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'graph' ? 'active' : ''}`}
+              onClick={() => setActiveTab('graph')}
+            >
+              🧠 Graph Console
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'directory' ? 'active' : ''}`}
+              onClick={() => setActiveTab('directory')}
+            >
+              📇 Directory
+            </button>
+          </div>
+
+          <main className="main-content">
+            {!supabase ? (
+              <div className="empty-state">
+                <h2 style={{ color: 'var(--red-color)' }}>Connection Error</h2>
+                <p style={{ marginTop: '0.5rem' }}>Missing <code>VITE_SUPABASE_URL</code> or <code>VITE_SUPABASE_ANON_KEY</code> in your <code>frontend/.env</code> file.</p>
+              </div>
+            ) : activeTab === 'tasks' ? (
+              // RENDER THE TASKS DASHBOARD
+              loading && Object.keys(grouped).length === 0 ? (
+                <div className="loading-state">Loading your personalized dashboard...</div>
+              ) : categoryKeys.length === 0 ? (
+                <div className="empty-state">No pending tasks! 🎉</div>
+              ) : (
+                categoryKeys.map(cat => (
+                  <div key={cat} className={`category-accordion ${cat === 'Check_Out_Mail' ? 'checkout-mail' : ''}`}>
+                    <div
+                      className="accordion-header"
+                      onClick={() => toggleCategory(cat)}
+                    >
+                      <div className="accordion-title">
+                        {expandedCategories[cat] ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+                        <h2>{cat.replace(/_/g, ' ').toUpperCase()}</h2>
+                      </div>
+                      {cat !== 'Check_Out_Mail' && (
+                        <div className="urgency-indicators">
+                          <div className="urgency-box red">{grouped[cat].urgency.RED}</div>
+                          <div className="urgency-box yellow">{grouped[cat].urgency.YELLOW}</div>
+                          <div className="urgency-box green">{grouped[cat].urgency.GREEN}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {expandedCategories[cat] && (
+                      <div className="accordion-body">
+                         {grouped[cat].tasks.map(task => (
+                          <TaskCard
+                            key={task.id}
+                            task={task}
+                            onToggleStar={toggleStar}
+                            onComplete={toggleComplete}
+                            onTaskDelete={deleteTask}
+                            gmailEmail={userSettings?.gmail_email}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )
+            ) : activeTab === 'graph' ? (
+              // RENDER THE GRAPH CONSOLE (Chat Interface)
+              <div className="graph-console-container">
+                <div className="graph-settings-panel">
+                  <div className="search-mode-selector">
+                    <button
+                      className={`mode-btn ${searchMode === 'local' ? 'active' : ''}`}
+                      onClick={() => setSearchMode('local')}
+                    >
+                      Local Search
+                    </button>
+                    <button
+                      className={`mode-btn ${searchMode === 'global' ? 'active' : ''}`}
+                      onClick={() => setSearchMode('global')}
+                    >
+                      Global Search
+                    </button>
+                  </div>
+                  <p className="mode-description">
+                    {searchMode === 'local'
+                      ? "🧠 Neighborhood Search: Traverses a 2-hop neighborhood of matching email threads to answer specific details, dependencies, and tasks."
+                      : "🌐 Global Search: Aggregates findings from Louvain community reports to summarize high-level operational updates and themes across all threads."
+                    }
+                  </p>
+                </div>
+
+                <div className="graph-chat-log" ref={graphChatRef}>
+                  {graphMessages.length === 0 ? (
+                    <div className="graph-chat-empty">
+                      <h3>Graph Intelligence Chat</h3>
+                      <p>Ask questions about your email network, dependencies, and team project dynamics.</p>
+                      
+                      <div className="graph-query-suggestions">
+                        <h4>Try asking:</h4>
+                        <button onClick={() => handleQuickQuery("What are the main operational issues or project updates discussed across our vendor emails?")}>
+                          🔍 What are the main operational updates across vendor emails?
+                        </button>
+                        <button onClick={() => handleQuickQuery("Which external organizations are involved in our project dependencies, and what are their active assignments or blockers?")}>
+                          🔍 What external organizations are involved in our project dependencies?
+                        </button>
+                        <button onClick={() => handleQuickQuery("Summarize the active deadlines and assignments for Project Apollo.")}>
+                          🔍 Summarize active deadlines and assignments for Project Apollo.
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    graphMessages.map((msg, idx) => (
+                      <div key={idx} className={`graph-message ${msg.sender}`}>
+                        <div className="message-header">
+                          {msg.sender === 'user' ? 'You' : 'Tasker Graph Engine'}
+                        </div>
+                        <div className="message-body">
+                          {msg.sender === 'user' ? msg.text : renderFormattedText(msg.text, msg.citations)}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                  {graphLoading && (
+                    <div className="graph-message ai loading">
+                      <div className="message-header">Tasker Graph Engine</div>
+                      <div className="message-body">
+                        <div className="typing-dots"><span /><span /><span /></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="graph-input-container">
+                  <input
+                    type="text"
+                    className="graph-chat-input"
+                    placeholder="Ask about contacts, projects, or threads..."
+                    value={graphInput}
+                    onChange={e => setGraphInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleGraphQuery()}
+                    disabled={graphLoading}
+                  />
+                  <button
+                    className="graph-send-btn"
+                    onClick={handleGraphQuery}
+                    disabled={graphLoading || !graphInput.trim()}
+                  >
+                    <Send size={18} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              // RENDER THE CONTACTS & PROJECTS DIRECTORY
+              <div className="directory-container">
+                <div className="directory-subtabs">
+                  <button
+                    className={`subtab-btn ${directorySubTab === 'contacts' ? 'active' : ''}`}
+                    onClick={() => { setDirectorySubTab('contacts'); setDirectorySearchQuery(''); }}
+                  >
+                    👥 Contacts & Biographies
+                  </button>
+                  <button
+                    className={`subtab-btn ${directorySubTab === 'projects' ? 'active' : ''}`}
+                    onClick={() => { setDirectorySubTab('projects'); setDirectorySearchQuery(''); }}
+                  >
+                    📂 Projects & Focus Areas
+                  </button>
+                </div>
+
+                <div className="directory-search-bar">
+                  <input
+                    type="text"
+                    className="directory-search-input"
+                    placeholder={directorySubTab === 'contacts' ? "Search contacts by name, email, biography..." : "Search manual projects or dynamic clusters..."}
+                    value={directorySearchQuery}
+                    onChange={e => setDirectorySearchQuery(e.target.value)}
+                  />
+                </div>
+
+                {directoryLoading ? (
+                  <div className="loading-state">Updating directory indices...</div>
+                ) : directorySubTab === 'contacts' ? (
+                  // Contacts List
+                  filteredContacts.length === 0 ? (
+                    <div className="directory-empty">No contacts matched your search query.</div>
+                  ) : (
+                    <div className="directory-grid">
+                      {filteredContacts.map(c => (
+                        <div key={c.id} className="directory-card contact-card">
+                          <div className="card-header">
+                            <h3>{c.name || 'Unnamed Contact'}</h3>
+                            {c.organization && <span className="org-badge">{c.organization}</span>}
+                          </div>
+                          <a href={`mailto:${c.email}`} className="contact-email">{c.email}</a>
+                          <p className="contact-bio">{c.bio_summary || 'No biography compiled yet.'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  // Projects / Focus Areas List
+                  <div className="projects-view-container">
+                    <div className="directory-section-title">Manual Corporate Projects</div>
+                    {filteredProjects.length === 0 ? (
+                      <div className="directory-empty">No manual projects found.</div>
+                    ) : (
+                      <div className="directory-grid">
+                        {filteredProjects.map(p => (
+                          <div key={p.id} className="directory-card project-card">
+                            <div className="card-header">
+                              <h3>{p.name}</h3>
+                              <span className={`status-badge ${p.status}`}>{p.status.toUpperCase()}</span>
+                            </div>
+                            <p className="project-description">{p.description || 'No description provided.'}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="directory-section-title" style={{ marginTop: '2.5rem' }}>Dynamic Clusters & Communities (Louvain)</div>
+                    {filteredCommunities.length === 0 ? (
+                      <div className="directory-empty">No dynamic communities found.</div>
+                    ) : (
+                      <div className="directory-grid">
+                        {filteredCommunities.map(comm => {
+                          const rating = parseFloat(comm.rating) || 0;
+                          const ratingClass = rating >= 7 ? 'red' : rating >= 4 ? 'yellow' : 'green';
+                          return (
+                            <div key={comm.id} className="directory-card community-card">
+                              <div className="card-header">
+                                <h3>{comm.title}</h3>
+                                <span className={`rating-badge ${ratingClass}`}>
+                                  Priority: {rating.toFixed(1)}/10
+                                </span>
+                              </div>
+                              <p className="rating-explanation"><em>{comm.rating_explanation}</em></p>
+                              <p className="community-summary">{comm.summary}</p>
+                              {comm.findings && Array.isArray(comm.findings) && comm.findings.length > 0 && (
+                                <div className="community-findings">
+                                  <h4>Findings:</h4>
+                                  <ul>
+                                    {comm.findings.map((f, i) => (
+                                      <li key={i}>
+                                        <strong>{f.summary}</strong>: {f.explanation}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
+            )}
+          </main>
 
-              {expandedCategories[cat] && (
-                <div className="accordion-body">
-                   {grouped[cat].tasks.map(task => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      onToggleStar={toggleStar}
-                      onComplete={toggleComplete}
-                      onTaskDelete={deleteTask}
-                      gmailEmail={userSettings?.gmail_email}
-                    />
+          {/* ═══ AI MIND DRAWER (All Users) ═══ */}
+          {isMindOpen && (
+            <>
+              <div className="mind-backdrop" onClick={() => setIsMindOpen(false)} />
+              <div className="mind-drawer">
+                <div className="mind-header">
+                  <h2>🧠 AI Mind Center</h2>
+                  <button className="mind-close-btn" onClick={() => setIsMindOpen(false)}><X size={16} /></button>
+                </div>
+
+                {userSettings?.user_profile && (
+                  <div className="mind-profile-card">
+                    <div className="label">Current Cognitive Profile</div>
+                    <p>{userSettings.user_profile.length > 180 ? userSettings.user_profile.substring(0, 180) + '...' : userSettings.user_profile}</p>
+                    <div className="mind-categories">
+                      {(userSettings.categories || []).map(c => <span key={c} className="mind-cat-chip">{c}</span>)}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mind-chat" ref={mindChatRef}>
+                  {mindChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
+                  {mindLoading && <div className="typing-dots"><span /><span /><span /></div>}
+                </div>
+
+                <div className="quick-chips">
+                  {['Track my boss\'s emails', 'Merge categories', 'Filter newsletters', 'Add new category'].map(chip => (
+                    <button key={chip} className="quick-chip" onClick={() => setMindInput(chip)}>{chip}</button>
                   ))}
                 </div>
-              )}
-            </div>
-          ))
-        )}
-      </main>
 
-      {/* ═══ AI MIND DRAWER (All Users) ═══ */}
-      {isMindOpen && (
-        <>
-          <div className="mind-backdrop" onClick={() => setIsMindOpen(false)} />
-          <div className="mind-drawer">
-            <div className="mind-header">
-              <h2>🧠 AI Mind Center</h2>
-              <button className="mind-close-btn" onClick={() => setIsMindOpen(false)}><X size={16} /></button>
-            </div>
-
-            {userSettings?.user_profile && (
-              <div className="mind-profile-card">
-                <div className="label">Current Cognitive Profile</div>
-                <p>{userSettings.user_profile.length > 180 ? userSettings.user_profile.substring(0, 180) + '...' : userSettings.user_profile}</p>
-                <div className="mind-categories">
-                  {(userSettings.categories || []).map(c => <span key={c} className="mind-cat-chip">{c}</span>)}
+                <div className="mind-input-bar">
+                  <input
+                    className="mind-input"
+                    value={mindInput}
+                    onChange={e => setMindInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleMindChat()}
+                    placeholder="Prompt your AI companion..."
+                    disabled={mindLoading}
+                  />
+                  <button className="mind-send-btn" onClick={handleMindChat} disabled={mindLoading || !mindInput.trim()}>
+                    <Send size={16} />
+                  </button>
                 </div>
               </div>
-            )}
+            </>
+          )}
 
-            <div className="mind-chat" ref={mindChatRef}>
-              {mindChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
-              {mindLoading && <div className="typing-dots"><span /><span /><span /></div>}
-            </div>
-
-            <div className="quick-chips">
-              {['Track my boss\'s emails', 'Merge categories', 'Filter newsletters', 'Add new category'].map(chip => (
-                <button key={chip} className="quick-chip" onClick={() => setMindInput(chip)}>{chip}</button>
-              ))}
-            </div>
-
-            <div className="mind-input-bar">
-              <input
-                className="mind-input"
-                value={mindInput}
-                onChange={e => setMindInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleMindChat()}
-                placeholder="Prompt your AI companion..."
-                disabled={mindLoading}
-              />
-              <button className="mind-send-btn" onClick={handleMindChat} disabled={mindLoading || !mindInput.trim()}>
-                <Send size={16} />
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
+          {/* ═══ CITATION CONTEXT MODAL ═══ */}
+          {activeCitation && (
+            <>
+              <div className="modal-backdrop" onClick={() => setActiveCitation(null)} />
+              <div className="citation-modal">
+                <div className="modal-header">
+                  <h2>Email Reference Context</h2>
+                  <button className="modal-close-btn" onClick={() => setActiveCitation(null)}><X size={18} /></button>
+                </div>
+                <div className="modal-body">
+                  <div className="meta-grid">
+                    <div className="meta-item">
+                      <span className="label">Subject</span>
+                      <span className="value">{activeCitation.subject}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="label">From</span>
+                      <span className="value">{activeCitation.sender}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="label">Date</span>
+                      <span className="value">
+                        {activeCitation.date ? format(new Date(activeCitation.date), 'MMM d, yyyy h:mm a') : 'Unknown'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="snippet-section">
+                    <span className="label">Thread Summary / Snippet</span>
+                    <p className="snippet-text">{activeCitation.snippet || 'No summary available.'}</p>
+                  </div>
+                  
+                  <a
+                    href={userSettings?.gmail_email 
+                      ? `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(userSettings.gmail_email)}#all/${activeCitation.gmail_thread_id}`
+                      : `https://mail.google.com/mail/u/0/#all/${activeCitation.gmail_thread_id}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="gmail-redirection-btn"
+                  >
+                    Open Thread in Gmail <ExternalLink size={14} style={{ marginLeft: '6px' }} />
+                  </a>
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
 

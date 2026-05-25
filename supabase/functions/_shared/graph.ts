@@ -1,0 +1,828 @@
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getNextKey } from "./keys.ts";
+import { prePassRedact } from "./pii.ts";
+import { sleep } from "./utils.ts";
+
+export interface EntityTriplet {
+  type: 'entity';
+  name: string;
+  entityType: string;
+  description: string;
+}
+
+export interface RelationshipTriplet {
+  type: 'relationship';
+  source: string;
+  target: string;
+  relationType: string;
+  description: string;
+  strength: number;
+}
+
+// Generates zero-padded 1536-dimensional embeddings using native Deno gte-small model
+export async function getEmbedding(text: string): Promise<number[]> {
+  try {
+    // @ts-ignore: Supabase is a global edge runtime object
+    if (typeof Supabase !== 'undefined' && Supabase.ai) {
+      // @ts-ignore
+      const session = new Supabase.ai.Session('gte-small');
+      const raw = await session.run(text, {
+        mean_pool: true,
+        normalize: true,
+      });
+      const arr = Array.from(raw as number[]);
+      const padded = new Array(1536).fill(0);
+      for (let i = 0; i < Math.min(arr.length, 1536); i++) {
+        padded[i] = arr[i];
+      }
+      return padded;
+    } else {
+      // Deterministic fallback for tests/local environment
+      const vec = new Array(1536).fill(0);
+      for (let i = 0; i < Math.min(text.length, 384); i++) {
+        vec[i] = text.charCodeAt(i) / 256;
+      }
+      return vec;
+    }
+  } catch (e) {
+    console.error("Embedding generation failed, returning zero vector:", e);
+    return new Array(1536).fill(0);
+  }
+}
+
+// Helper to parse LLM delimiter-separated triplet output
+export function parseTriplets(text: string): (EntityTriplet | RelationshipTriplet)[] {
+  const results: (EntityTriplet | RelationshipTriplet)[] = [];
+  const matches = text.match(/\((?:[^)]|\)[^#])*\)/g) || [];
+  
+  for (const match of matches) {
+    const inner = match.slice(1, -1).trim();
+    const parts = inner.split('|');
+    if (parts.length === 0) continue;
+    
+    const cleanParts = parts.map(p => p.replace(/^["']|["']$/g, '').trim());
+    const kind = cleanParts[0].toLowerCase();
+    
+    if (kind === 'entity' && cleanParts.length >= 4) {
+      results.push({
+        type: 'entity',
+        name: cleanParts[1],
+        entityType: cleanParts[2].toUpperCase(),
+        description: cleanParts[3]
+      });
+    } else if (kind === 'relationship' && cleanParts.length >= 6) {
+      results.push({
+        type: 'relationship',
+        source: cleanParts[1],
+        target: cleanParts[2],
+        relationType: cleanParts[3].toUpperCase(),
+        description: cleanParts[4],
+        strength: parseFloat(cleanParts[5]) || 1
+      });
+    }
+  }
+  return results;
+}
+
+// Triplet extractor using llama-3.3-70b-specdec on Groq
+export class GraphRAGExtractor {
+  async extractFromEmail(emailBody: string, emailSubject: string): Promise<{
+    entities: EntityTriplet[];
+    relationships: RelationshipTriplet[];
+  }> {
+    const redactedText = prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
+    
+    const prompt = `You are a professional Knowledge Graph Builder. Your job is to extract entities and their relationships from the given email text.
+Return ONLY raw tuples separated by "##". Do not wrap in markdown, code blocks, or include any explanations.
+Do NOT use the pipe character "|" in descriptions or entity names. If you need a separator in descriptions, use a comma.
+
+Entity format:
+("entity"|<name>|<type>|<description>)
+Supported entity types: CONTACT, ORGANIZATION, PROJECT, TASK, TOPIC
+
+Relationship format:
+("relationship"|<source>|<target>|<relation_type>|<description>|<strength>)
+Supported relation types: SENT_BY, ASSIGNED_TO, MEMBER_OF, PART_OF, DISPUTED_WITH, BLOCKED_BY, DISCUSSES
+
+EMAIL CONTENT:
+${redactedText}
+
+OUTPUT:`;
+
+    let attempts = 3;
+    let responseText = "";
+    while (attempts > 0) {
+      const key = getNextKey();
+      try {
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "meta-llama/llama-3.3-70b-specdec",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.1
+          })
+        });
+        if (res.status === 429) {
+          attempts--;
+          await sleep(1000);
+          continue;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          responseText = data.choices?.[0]?.message?.content || "";
+          break;
+        }
+      } catch (err) {
+        console.error("Groq triplet extraction error:", err);
+      }
+      attempts--;
+    }
+    
+    const parsed = parseTriplets(responseText);
+    const entities = parsed.filter(t => t.type === 'entity') as EntityTriplet[];
+    const relationships = parsed.filter(t => t.type === 'relationship') as RelationshipTriplet[];
+    
+    return { entities, relationships };
+  }
+}
+
+// Adjacency-based Louvain clustering algorithm in pure TypeScript
+interface LouvainEdge {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export function runLouvain(nodes: string[], edges: LouvainEdge[]): Record<string, string> {
+  const nodeToCommunity: Record<string, string> = {};
+  for (const node of nodes) {
+    nodeToCommunity[node] = node;
+  }
+  
+  if (nodes.length === 0) return {};
+  if (edges.length === 0) return nodeToCommunity;
+  
+  let currentNodes = [...nodes];
+  let currentEdges = [...edges];
+  
+  let nodeToIdx = new Map<string, number>();
+  currentNodes.forEach((n, i) => nodeToIdx.set(n, i));
+  
+  const N = currentNodes.length;
+  let communities = Array.from({ length: N }, (_, i) => i);
+  
+  let adj = Array.from({ length: N }, () => new Map<number, number>());
+  let k = new Array(N).fill(0);
+  let m = 0;
+  
+  for (const edge of currentEdges) {
+    const u = nodeToIdx.get(edge.source);
+    const v = nodeToIdx.get(edge.target);
+    if (u === undefined || v === undefined) continue;
+    
+    adj[u].set(v, (adj[u].get(v) || 0) + edge.weight);
+    if (u !== v) {
+      adj[v].set(u, (adj[v].get(u) || 0) + edge.weight);
+    }
+    k[u] += edge.weight;
+    k[v] += edge.weight;
+    m += edge.weight;
+  }
+  
+  let improvement = true;
+  while (improvement) {
+    improvement = false;
+    let tot = new Array(N).fill(0);
+    communities.forEach((c, i) => {
+      tot[c] += k[i];
+    });
+    
+    let moved = true;
+    let passes = 0;
+    while (moved && passes < 10) {
+      moved = false;
+      passes++;
+      
+      for (let i = 0; i < N; i++) {
+        const ki = k[i];
+        const oldComm = communities[i];
+        
+        let k_i_out = 0;
+        for (const [neighbor, weight] of adj[i].entries()) {
+          if (communities[neighbor] === oldComm) {
+            k_i_out += weight;
+          }
+        }
+        
+        const commWeights = new Map<number, number>();
+        for (const [neighbor, weight] of adj[i].entries()) {
+          const c = communities[neighbor];
+          if (c !== oldComm) {
+            commWeights.set(c, (commWeights.get(c) || 0) + weight);
+          }
+        }
+        
+        let bestComm = oldComm;
+        let maxDeltaQ = 0;
+        
+        for (const [c, k_i_in] of commWeights.entries()) {
+          const deltaQ = k_i_in - k_i_out + (ki / (2 * m)) * (tot[oldComm] - tot[c] - ki);
+          if (deltaQ > maxDeltaQ) {
+            maxDeltaQ = deltaQ;
+            bestComm = c;
+          }
+        }
+        
+        if (bestComm !== oldComm) {
+          communities[i] = bestComm;
+          tot[oldComm] -= ki;
+          tot[bestComm] += ki;
+          moved = true;
+          improvement = true;
+        }
+      }
+    }
+    
+    if (!improvement) break;
+    
+    const uniqueComms = Array.from(new Set(communities));
+    const commToNewIdx = new Map<number, number>();
+    uniqueComms.forEach((c, idx) => commToNewIdx.set(c, idx));
+    
+    const C = uniqueComms.length;
+    const nextNodes = Array.from({ length: C }, (_, idx) => `comm_${idx}`);
+    
+    const nextEdgesMap = new Map<string, number>();
+    for (let u = 0; u < N; u++) {
+      const commU = commToNewIdx.get(communities[u])!;
+      for (const [v, weight] of adj[u].entries()) {
+        const commV = commToNewIdx.get(communities[v])!;
+        const key = commU <= commV ? `${commU}_${commV}` : `${commV}_${commU}`;
+        nextEdgesMap.set(key, (nextEdgesMap.get(key) || 0) + weight);
+      }
+    }
+    
+    const nextEdges: LouvainEdge[] = [];
+    for (const [key, weight] of nextEdgesMap.entries()) {
+      const [u, v] = key.split('_').map(Number);
+      nextEdges.push({ source: `comm_${u}`, target: `comm_${v}`, weight });
+    }
+    
+    for (const node of nodes) {
+      const currentComm = nodeToCommunity[node];
+      const idx = nodeToIdx.get(currentComm)!;
+      const finalCommIdx = commToNewIdx.get(communities[idx])!;
+      nodeToCommunity[node] = `comm_${finalCommIdx}`;
+    }
+    
+    currentNodes = nextNodes;
+    currentEdges = nextEdges;
+    nodeToIdx = new Map<string, number>();
+    currentNodes.forEach((n, i) => nodeToIdx.set(n, i));
+    
+    adj = Array.from({ length: C }, () => new Map<number, number>());
+    k = new Array(C).fill(0);
+    m = 0;
+    
+    for (const edge of currentEdges) {
+      const u = nodeToIdx.get(edge.source)!;
+      const v = nodeToIdx.get(edge.target)!;
+      adj[u].set(v, (adj[u].get(v) || 0) + edge.weight);
+      if (u !== v) {
+        adj[v].set(u, (adj[v].get(u) || 0) + edge.weight);
+      }
+      k[u] += edge.weight;
+      k[v] += edge.weight;
+      m += edge.weight;
+    }
+    
+    communities = Array.from({ length: C }, (_, i) => i);
+    break; // Single-level coarse graining is stable and efficient
+  }
+  
+  return nodeToCommunity;
+}
+
+// Graph RAG Store: Handles node/edge inserts, entity resolution, and Louvain community report updates
+export class GraphRAGStore {
+  private supabase: any;
+  
+  constructor(supabaseClient: any) {
+    this.supabase = supabaseClient;
+  }
+  
+  async resolveContact(name: string, email: string, organization?: string): Promise<string> {
+    const normName = name.trim().toUpperCase();
+    const cleanEmail = email.trim().toLowerCase();
+    
+    // 1. Exact Email lookup
+    const { data: byEmail } = await this.supabase
+      .from("contacts")
+      .select("id, name, bio_summary")
+      .eq("email", cleanEmail)
+      .maybeSingle();
+    if (byEmail) return byEmail.id;
+    
+    // 2. Exact Name lookup
+    const { data: byName } = await this.supabase
+      .from("contacts")
+      .select("id, email, bio_summary")
+      .ilike("name", normName)
+      .limit(1);
+    if (byName && byName.length > 0) {
+      return byName[0].id;
+    }
+    
+    // 3. Vector Similarity check
+    const embedding = await getEmbedding(`${normName} ${organization || ""}`);
+    const { data: matched } = await this.supabase.rpc("match_contacts", {
+      query_embedding: embedding,
+      match_threshold: 0.85,
+      match_count: 1
+    });
+    
+    if (matched && matched.length > 0) {
+      const canon = matched[0];
+      const newBio = canon.bio_summary 
+        ? `${canon.bio_summary} | Name alias: ${name} (${organization || "None"})`
+        : `Name alias: ${name} (${organization || "None"})`;
+      const newEmbedding = await getEmbedding(`${canon.name} ${newBio}`);
+      
+      await this.supabase
+        .from("contacts")
+        .update({ bio_summary: newBio, embedding: newEmbedding })
+        .eq("id", canon.id);
+        
+      return canon.id;
+    }
+    
+    // 4. Create new contact
+    const bio = `Contact resolved from email communications. Name: ${name}. Organization: ${organization || "Unknown"}.`;
+    const contactEmbedding = await getEmbedding(`${name} ${bio}`);
+    
+    const { data: inserted, error: insErr } = await this.supabase
+      .from("contacts")
+      .insert({
+        email: cleanEmail,
+        name: name,
+        organization: organization || null,
+        bio_summary: bio,
+        embedding: contactEmbedding
+      })
+      .select("id")
+      .single();
+      
+    if (insErr) {
+      const { data: fallback } = await this.supabase.from("contacts").select("id").eq("email", cleanEmail).maybeSingle();
+      return fallback?.id || crypto.randomUUID();
+    }
+    return inserted.id;
+  }
+  
+  async resolveProject(name: string, description?: string): Promise<string> {
+    const normName = name.trim().toUpperCase();
+    const { data: existing } = await this.supabase
+      .from("projects")
+      .select("id")
+      .ilike("name", normName)
+      .limit(1);
+    if (existing && existing.length > 0) return existing[0].id;
+    
+    const { data: inserted, error } = await this.supabase
+      .from("projects")
+      .insert({
+        name: name.trim(),
+        description: description || `Focus area: ${name}`
+      })
+      .select("id")
+      .single();
+      
+    if (error) {
+      const { data: fallback } = await this.supabase.from("projects").select("id").eq("name", name.trim()).maybeSingle();
+      return fallback?.id || crypto.randomUUID();
+    }
+    return inserted.id;
+  }
+  
+  async writeEdge(sourceId: string, targetId: string, sourceType: string, targetType: string, relType: string, description: string) {
+    await this.supabase
+      .from("graph_edges")
+      .insert({
+        source_id: sourceId,
+        target_id: targetId,
+        source_type: sourceType,
+        target_type: targetType,
+        relationship_type: relType,
+        description: description
+      });
+  }
+
+  async ingestEmailToGraph(raw: {
+    message_id: string;
+    subject: string;
+    body: string;
+    sender: string;
+    thread_id: string;
+    received_at: string;
+  }, userId: string) {
+    const normSubject = raw.subject || "(no subject)";
+    const normBody = raw.body || "";
+    
+    // 1. Resolve Sender
+    const senderStr = raw.sender || "unknown";
+    let senderName = senderStr;
+    let senderEmail = `${senderStr.toLowerCase().replace(/[^a-z0-9]/g, "")}@placeholder.tasker.local`;
+    
+    const emailMatch = senderStr.match(/^(.*?)\s*<([^>]+)>/);
+    if (emailMatch) {
+      senderName = emailMatch[1].trim();
+      senderEmail = emailMatch[2].trim().toLowerCase();
+    } else if (senderStr.includes("@")) {
+      senderName = senderStr.split("@")[0].trim();
+      senderEmail = senderStr.trim().toLowerCase();
+    }
+    
+    const senderId = await this.resolveContact(senderName, senderEmail);
+    
+    // 2. Resolve Thread
+    const gmailThreadId = raw.thread_id || `raw_thread_${raw.message_id}`;
+    let threadId: string;
+    const { data: existingThread } = await this.supabase
+      .from("threads")
+      .select("id")
+      .eq("gmail_thread_id", gmailThreadId)
+      .maybeSingle();
+      
+    if (existingThread) {
+      threadId = existingThread.id;
+    } else {
+      const { data: insertedThread, error: threadErr } = await this.supabase
+        .from("threads")
+        .insert({
+          gmail_thread_id: gmailThreadId,
+          subject: normSubject,
+          semantic_summary: raw.body.substring(0, 200)
+        })
+        .select("id")
+        .single();
+        
+      if (threadErr) {
+        const { data: fallbackThread } = await this.supabase
+          .from("threads")
+          .select("id")
+          .eq("gmail_thread_id", gmailThreadId)
+          .maybeSingle();
+        threadId = fallbackThread?.id || crypto.randomUUID();
+      } else {
+        threadId = insertedThread.id;
+      }
+    }
+    
+    // 3. Resolve and Insert Email
+    let emailId: string;
+    const { data: existingEmail } = await this.supabase
+      .from("emails")
+      .select("id")
+      .eq("message_id", raw.message_id)
+      .maybeSingle();
+      
+    if (existingEmail) {
+      emailId = existingEmail.id;
+    } else {
+      const embedding = await getEmbedding(`${normSubject}\n${raw.body.substring(0, 300)}`);
+      const { data: insertedEmail, error: emailErr } = await this.supabase
+        .from("emails")
+        .insert({
+          message_id: raw.message_id,
+          thread_id: threadId,
+          sender_id: senderId,
+          subject: normSubject,
+          body: normBody,
+          snippet: raw.body.substring(0, 300),
+          received_at: raw.received_at || new Date().toISOString(),
+          embedding: embedding
+        })
+        .select("id")
+        .single();
+        
+      if (emailErr) {
+        const { data: fallbackEmail } = await this.supabase
+          .from("emails")
+          .select("id")
+          .eq("message_id", raw.message_id)
+          .maybeSingle();
+        emailId = fallbackEmail?.id || crypto.randomUUID();
+      } else {
+        emailId = insertedEmail.id;
+      }
+    }
+    
+    // 4. Extract entities & relationships via LLM
+    const extractor = new GraphRAGExtractor();
+    const { entities, relationships } = await extractor.extractFromEmail(normBody, normSubject);
+    
+    // 5. Resolve entities to UUIDs
+    const resolvedIds = new Map<string, { id: string; type: string }>();
+    
+    // Add known context nodes to the map first
+    resolvedIds.set(senderName.toUpperCase(), { id: senderId, type: "contact" });
+    resolvedIds.set(normSubject.toUpperCase(), { id: threadId, type: "thread" });
+    
+    for (const ent of entities) {
+      const nameUpper = ent.name.toUpperCase();
+      let entityUuid = "";
+      let type = "unknown";
+      
+      try {
+        if (ent.entityType === "CONTACT" || ent.entityType === "ORGANIZATION") {
+          type = "contact";
+          entityUuid = await this.resolveContact(ent.name, "", ent.entityType === "ORGANIZATION" ? ent.name : undefined);
+        } else if (ent.entityType === "PROJECT" || ent.entityType === "TOPIC") {
+          type = "project";
+          entityUuid = await this.resolveProject(ent.name, ent.description);
+        } else if (ent.entityType === "TASK") {
+          type = "task";
+          const { data: existingTask } = await this.supabase
+            .from("tasks")
+            .select("id")
+            .eq("user_id", userId)
+            .ilike("title", ent.name.trim())
+            .limit(1);
+            
+          if (existingTask && existingTask.length > 0) {
+            entityUuid = existingTask[0].id;
+          } else {
+            const { data: insertedTask, error: taskErr } = await this.supabase
+              .from("tasks")
+              .insert({
+                title: ent.name.trim(),
+                summary: ent.description,
+                source_email_id: `graph_extracted_${crypto.randomUUID()}`,
+                status: "pending",
+                user_id: userId
+              })
+              .select("id")
+              .single();
+              
+            if (taskErr) {
+              entityUuid = crypto.randomUUID();
+            } else {
+              entityUuid = insertedTask.id;
+            }
+          }
+        }
+        
+        if (entityUuid) {
+          resolvedIds.set(nameUpper, { id: entityUuid, type });
+        }
+      } catch (err) {
+        console.error(`Failed to resolve entity ${ent.name} of type ${ent.entityType}:`, err);
+      }
+    }
+    
+    // 6. Write Edges to Database
+    for (const rel of relationships) {
+      const srcUpper = rel.source.toUpperCase();
+      const tgtUpper = rel.target.toUpperCase();
+      
+      const resolvedSrc = resolvedIds.get(srcUpper);
+      const resolvedTgt = resolvedIds.get(tgtUpper);
+      
+      if (resolvedSrc && resolvedTgt) {
+        try {
+          await this.writeEdge(
+            resolvedSrc.id,
+            resolvedTgt.id,
+            resolvedSrc.type,
+            resolvedTgt.type,
+            rel.relationType,
+            rel.description
+          );
+        } catch (err) {
+          console.error(`Failed to write edge between ${rel.source} and ${rel.target}:`, err);
+        }
+      }
+    }
+    
+    // Write implicit relation: sender sent this thread
+    try {
+      await this.writeEdge(senderId, threadId, "contact", "thread", "SENT", "Sender sent email in this thread");
+    } catch (_) {}
+  }
+
+  async buildCommunities() {
+    console.log("[LOUVAIN] Starting Louvain community detection partitioning...");
+    
+    // Load nodes and edges from the DB
+    const { data: edges } = await this.supabase
+      .from("graph_edges")
+      .select("source_id, target_id, relationship_type, description");
+      
+    if (!edges || edges.length === 0) {
+      console.log("[LOUVAIN] No edges found in property graph. Skipping community reports.");
+      return;
+    }
+    
+    // Aggregate unique nodes
+    const nodeSet = new Set<string>();
+    for (const e of edges) {
+      nodeSet.add(e.source_id);
+      nodeSet.add(e.target_id);
+    }
+    const nodes = Array.from(nodeSet);
+    
+    // Sum edge occurrences to compute weights
+    const edgeWeights = new Map<string, number>();
+    const edgeDescriptions = new Map<string, string[]>();
+    for (const e of edges) {
+      const key = e.source_id <= e.target_id ? `${e.source_id}_${e.target_id}` : `${e.target_id}_${e.source_id}`;
+      edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
+      
+      if (!edgeDescriptions.has(key)) edgeDescriptions.set(key, []);
+      edgeDescriptions.get(key)!.push(`${e.relationship_type}: ${e.description}`);
+    }
+    
+    const louvainEdges: LouvainEdge[] = [];
+    for (const [key, weight] of edgeWeights.entries()) {
+      const [src, tgt] = key.split('_');
+      louvainEdges.push({ source: src, target: tgt, weight });
+    }
+    
+    const nodeToCommunity = runLouvain(nodes, louvainEdges);
+    
+    // Group members by community
+    const communityGroups: Record<string, string[]> = {};
+    for (const [node, comm] of Object.entries(nodeToCommunity)) {
+      if (!communityGroups[comm]) communityGroups[comm] = [];
+      communityGroups[comm].push(node);
+    }
+    
+    // Clear old community report tables
+    await this.supabase.from("community_members").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await this.supabase.from("community_reports").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    
+    console.log(`[LOUVAIN] Partitioned graph into ${Object.keys(communityGroups).length} communities. Generating reports...`);
+    
+    // For each community, compile details and call LLM for summaries
+    for (const [commId, memberIds] of Object.entries(communityGroups)) {
+      if (memberIds.length < 2) continue; // Skip communities with only 1 node to optimize cost
+      
+      // Fetch names/subjects of member nodes for report context
+      const { data: contacts } = await this.supabase.from("contacts").select("id, name, organization").in("id", memberIds);
+      const { data: projects } = await this.supabase.from("projects").select("id, name").in("id", memberIds);
+      const { data: threads } = await this.supabase.from("threads").select("id, subject").in("id", memberIds);
+      const { data: tasks } = await this.supabase.from("tasks").select("id, title").in("id", memberIds);
+      
+      const memberNames: string[] = [];
+      const memberDetailsMap = new Map<string, { type: string; name: string }>();
+      
+      (contacts || []).forEach((c: any) => {
+        const val = `Contact: ${c.name} (${c.organization || "None"})`;
+        memberNames.push(val);
+        memberDetailsMap.set(c.id, { type: 'contact', name: c.name });
+      });
+      (projects || []).forEach((p: any) => {
+        const val = `Project: ${p.name}`;
+        memberNames.push(val);
+        memberDetailsMap.set(p.id, { type: 'project', name: p.name });
+      });
+      (threads || []).forEach((t: any) => {
+        const val = `Email Thread: ${t.subject}`;
+        memberNames.push(val);
+        memberDetailsMap.set(t.id, { type: 'thread', name: t.subject });
+      });
+      (tasks || []).forEach((t: any) => {
+        const val = `Task: ${t.title}`;
+        memberNames.push(val);
+        memberDetailsMap.set(t.id, { type: 'task', name: t.title });
+      });
+      
+      // Find relations within this community
+      const internalRelations: string[] = [];
+      for (const e of edges) {
+        if (memberIds.includes(e.source_id) && memberIds.includes(e.target_id)) {
+          const srcNode = memberDetailsMap.get(e.source_id);
+          const tgtNode = memberDetailsMap.get(e.target_id);
+          if (srcNode && tgtNode) {
+            internalRelations.push(`${srcNode.name} (${srcNode.type}) -> [${e.relationship_type}] -> ${tgtNode.name} (${tgtNode.type}): ${e.description}`);
+          }
+        }
+      }
+      
+      if (memberNames.length === 0) continue;
+      
+      const membersText = memberNames.join('\n');
+      const relationsText = internalRelations.slice(0, 30).join('\n') || "No direct links between members.";
+      
+      const report = await this.generateReport(membersText, relationsText);
+      const embedding = await getEmbedding(`${report.title} ${report.summary}`);
+      
+      // Insert community report
+      const { data: insertedReport, error: repErr } = await this.supabase
+        .from("community_reports")
+        .insert({
+          title: report.title,
+          summary: report.summary,
+          rating: report.rating,
+          rating_explanation: report.rating_explanation,
+          findings: report.findings,
+          embedding: embedding
+        })
+        .select("id")
+        .single();
+        
+      if (repErr) {
+        console.error("Failed to insert community report:", repErr);
+        continue;
+      }
+      
+      // Insert members of the community
+      const memberInserts = memberIds.map(nodeId => {
+        const detail = memberDetailsMap.get(nodeId);
+        return {
+          community_id: insertedReport.id,
+          node_id: nodeId,
+          node_type: detail ? detail.type : 'unknown'
+        };
+      });
+      await this.supabase.from("community_members").insert(memberInserts);
+    }
+    
+    console.log("[LOUVAIN] Rebuilding communities and summaries complete.");
+  }
+  
+  private async generateReport(membersText: string, relationsText: string): Promise<{
+    title: string;
+    summary: string;
+    rating: number;
+    rating_explanation: string;
+    findings: { summary: string; explanation: string }[];
+  }> {
+    const prompt = `You are a corporate intelligence analyst. Analyze this cluster of email communications, tasks, projects, and contacts to generate a structured Community Report.
+The output MUST be a valid JSON object matching the JSON schema below. Do not wrap in markdown, code blocks, or include extra text.
+
+JSON Schema:
+{
+  "title": "Descriptive title summarizing the cluster (e.g. 'Project Apollo API Overhaul')",
+  "summary": "High-level summary of the active discussions, threads, and tasks in the cluster.",
+  "rating": 5.5, // urgency score from 0.0 to 10.0 representing active blockers/outages
+  "rating_explanation": "One-sentence rationale for the urgency score.",
+  "findings": [
+    {
+      "summary": "Short heading summarizing the finding.",
+      "explanation": "Detailed explanation of the finding, citing the entities/relations."
+    }
+  ]
+}
+
+CLUSTER MEMBERS:
+${membersText}
+
+RELATIONSHIPS:
+${relationsText}
+
+OUTPUT:`;
+
+    let attempts = 3;
+    while (attempts > 0) {
+      const key = getNextKey();
+      try {
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "meta-llama/llama-3.1-8b-instant",
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" },
+            temperature: 0.2
+          })
+        });
+        if (res.status === 429) {
+          attempts--;
+          await sleep(1000);
+          continue;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          const content = data.choices?.[0]?.message?.content || "";
+          const parsed = JSON.parse(content);
+          if (parsed.title && parsed.summary && parsed.findings) {
+            return parsed;
+          }
+        }
+      } catch (err) {
+        console.error("Groq community report generation error:", err);
+      }
+      attempts--;
+    }
+
+    return {
+      title: "Active Communications Cluster",
+      summary: "Dynamic cluster containing email threads, tasks, and project communications.",
+      rating: 1.0,
+      rating_explanation: "API failure fallback.",
+      findings: []
+    };
+  }
+}

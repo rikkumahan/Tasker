@@ -577,19 +577,50 @@ erDiagram
 ### Component 3: Existing React Frontend Enhancements
 
 #### [MODIFY] [App.jsx](file:///c:/Users/rikku/OneDrive/Desktop/tasker/frontend/src/App.jsx)
-- **Multi-Tab Layout**: Introduces a navigation tab bar at the top of the main content area with three tabs:
-  - **Tasks View**: Existing task cards grouped by categories (academic, personal, check-out-mail).
-  - **Graph Console**: A dedicated chat-based console to query the GraphRAG system. Features:
-    - Search mode selector: **Global Search (Map-Reduce)** for thematic analyses vs **Local Search (Neighborhood)** for specific factual tracking.
-    - Interactive Chat: Send query input to the Supabase `/query` endpoint.
-    - Citation Badges: Markdown responses parse inline citations (e.g. `[Thread: Refactor API]`) as clickable elements opening a modal showing email sender, subject, date, and body snippet.
-  - **Contacts & Projects Directory**:
-    - Lists resolved contacts with dynamic AI-generated biography summaries and organization affiliations.
-    - Lists dynamic projects (Louvain communities) linked with manual projects and active deliverables.
+- **State Additions**:
+  - `activeTab` ('tasks' | 'graph' | 'directory'): Tracks current root view.
+  - `directorySubTab` ('contacts' | 'projects'): Tracks sub-view inside Directory.
+  - `searchMode` ('local' | 'global'): Selects the GraphRAG search mode.
+  - `graphMessages` (Array): Store history of chat queries and responses.
+  - `graphInput` (string): Text value for the input query.
+  - `graphLoading` (boolean): Query execution spinner flag.
+  - `activeCitation` (object): Selected email thread citation shown in detail modal.
+  - `directoryLoading` (boolean), `contactsList` (Array), `projectsList` (Array), `communitiesList` (Array): For contacts and projects directory data.
+  - `directorySearchQuery` (string): For search/filter functionality in Directory lists.
+- **Tab Layout & Rendering**:
+  - Render an `.app-tabs` navigation bar right below `<header className="app-header">...</header>`.
+  - Conditional rendering:
+    - **Tasks View**: The original categories loop (grouped and filtered pending tasks).
+    - **Graph Console**:
+      - Switchable search mode headers with descriptions for Global vs Local Search.
+      - A message list window rendering user queries and assistant responses.
+      - Formatted responses displaying lists, headers, bold text, and clickable `[Thread: Subject]` badges.
+      - Input field with keyboard listener (`Enter` key submits) and a Send button.
+    - **Contacts & Projects Directory**:
+      - Sub-tab header to switch between "Contacts & Biographies" and "Projects & Focus Areas".
+      - Search/filter input to filter listings dynamically in real time.
+      - Contacts list rendering Name, Organization, Email, and dynamic `bio_summary`.
+      - Projects list rendering:
+        - Manual Projects: Name, Status, Description.
+        - Dynamic Clusters: Title, priority rating value (colored badge), summary description, and bulleted findings.
+- **Inline Citation Parser**:
+  - Evaluates assistant messages using regex `/\[Thread:\s*([^\]]+)\]/g`.
+  - Replaces matches with a styled `<button className="citation-badge">` component.
+  - Clicking this badge matches the subject name to `citations` returned from Supabase, setting `activeCitation`.
+- **Context Modal**:
+  - Displayed as a modal dialog overlay when `activeCitation` is present.
+  - Renders subject, sender contact, date (formatted), semantic summary snippet, and an outbound Gmail link.
 
 #### [MODIFY] [index.css](file:///c:/Users/rikku/OneDrive/Desktop/tasker/frontend/src/index.css)
-- Adds styling tokens for the tab layout, chat console interface, bento grid structures, and clickable inline citation badges.
-- Implements premium transitions and loading indicators for long-running map-reduce queries.
+- **App Tabs Layout**: Glassmorphic tab bar container with active state borders, scaling transitions, and hover glow.
+- **Cognitive Graph Console**:
+  - Centered chat workspace styled as a high-density terminal grid panel.
+  - Search mode toggle switches with slider handles and neon glass borders.
+  - Message bubble structures: AI bubble with subtle bronze border (`var(--accent-glow)`) and user bubble with mid-navy backing.
+- **Citation Badges**: Inline capsules with hover scaling, cursor pointers, and subtle accent shadows.
+- **Context Modal Details**: Fullscreen backdrop filter overlay, bento-grid card centered, close button, formatted meta-fields, and button links.
+- **Directory Layout**: Two-column responsive bento layouts for contacts and projects directories. Highlighting priority ratings on Louvain communities using HSL color logic (Red-Yellow-Green ranges).
+- **Search Filters**: Minimal glassmorphic text input boxes with internal search icons.
 
 ---
 

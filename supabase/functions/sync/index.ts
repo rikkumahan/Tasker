@@ -3,6 +3,8 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { decodeBody, sleep } from "../_shared/utils.ts";
 import { refreshGmailToken } from "../_shared/oauth.ts";
 import { extractRawTasks, evolvePersonaFromTasks, categorizeTasks, runWarningEngine } from "../_shared/stages.ts";
+import { GraphRAGStore } from "../_shared/graph.ts";
+
 
 // ─────────────────────────────────────────────
 // Supabase Edge Runtime Background Task Helper
@@ -263,7 +265,8 @@ Deno.serve(async (req: Request) => {
           subject: (headers.Subject !== null && headers.Subject !== undefined) ? headers.Subject : "(no subject)",
           sender: (headers.From !== null && headers.From !== undefined) ? headers.From : "unknown",
           date: (headers.Date !== null && headers.Date !== undefined) ? headers.Date : "",
-          body
+          body,
+          threadId: fullMsg.threadId
         });
       } catch { /* skip failed email */ }
     }
@@ -277,7 +280,9 @@ Deno.serve(async (req: Request) => {
         snippet: e.body.substring(0, 500),
         body: e.body,
         received_at: e.date ? new Date(e.date).toISOString() : new Date().toISOString(),
-        status: "pending"
+        status: "pending",
+        sender: e.sender,
+        thread_id: e.threadId
       }));
       await supabaseAdmin.from("raw_emails").upsert(rawEmailInserts, { onConflict: "user_id, message_id" });
     }
@@ -307,8 +312,34 @@ Deno.serve(async (req: Request) => {
       id: r.message_id,
       subject: r.subject,
       body: r.body,
-      db_id: r.id
+      db_id: r.id,
+      sender: r.sender || "unknown",
+      thread_id: r.thread_id || `raw_thread_${r.message_id}`,
+      received_at: r.received_at
     }));
+
+    // Trigger Supabase/Deno Context-Aware Property Graph and GraphRAG Pipeline
+    if (unprocessedEmails.length > 0) {
+      const graphStore = new GraphRAGStore(supabaseAdmin);
+      const graphPipelinePromise = (async () => {
+        for (const email of unprocessedEmails.slice(0, 15)) {
+          try {
+            await graphStore.ingestEmailToGraph({
+              message_id: email.id,
+              subject: email.subject,
+              body: email.body,
+              sender: email.sender,
+              thread_id: email.thread_id,
+              received_at: email.received_at
+            }, user.id);
+          } catch (err) {
+            console.error(`[GraphRAG] Ingestion failed for email ${email.id}:`, err);
+          }
+        }
+        await graphStore.buildCommunities();
+      })();
+      fireAndForget(graphPipelinePromise);
+    }
 
     // Pending tasks context for update detection
     const { data: pendingTasksData } = await supabaseAdmin.from("tasks")
