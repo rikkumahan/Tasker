@@ -124,8 +124,8 @@ OUTPUT:`;
           })
         });
         if (res.status === 429) {
-          attempts--;
           await sleep(1000);
+          attempts--;
           continue;
         }
         if (res.ok) {
@@ -133,6 +133,8 @@ OUTPUT:`;
           responseText = data.choices?.[0]?.message?.content || "";
           break;
         }
+        // Non-ok, non-429 (e.g. 500): log and retry
+        console.error(`Groq triplet extraction HTTP ${res.status}: ${await res.text().catch(() => "")}`);
       } catch (err) {
         console.error("Groq triplet extraction error:", err);
       }
@@ -253,19 +255,23 @@ export function runLouvain(nodes: string[], edges: LouvainEdge[]): Record<string
     const C = uniqueComms.length;
     const nextNodes = Array.from({ length: C }, (_, idx) => `comm_${idx}`);
     
-    const nextEdgesMap = new Map<string, number>();
+    // Phase-2: coarse-grain graph into super-nodes.
+    // Use '||' separator (consistent with UUID edge keys above; integers also contain no '||').
+    const nextEdgesMap = new Map<string, { u: number; v: number; weight: number }>();
     for (let u = 0; u < N; u++) {
       const commU = commToNewIdx.get(communities[u])!;
       for (const [v, weight] of adj[u].entries()) {
         const commV = commToNewIdx.get(communities[v])!;
-        const key = commU <= commV ? `${commU}_${commV}` : `${commV}_${commU}`;
-        nextEdgesMap.set(key, (nextEdgesMap.get(key) || 0) + weight);
+        const [lo, hi] = commU <= commV ? [commU, commV] : [commV, commU];
+        const key = `${lo}||${hi}`;
+        const existing = nextEdgesMap.get(key);
+        if (existing) existing.weight += weight;
+        else nextEdgesMap.set(key, { u: lo, v: hi, weight });
       }
     }
     
     const nextEdges: LouvainEdge[] = [];
-    for (const [key, weight] of nextEdgesMap.entries()) {
-      const [u, v] = key.split('_').map(Number);
+    for (const { u, v, weight } of nextEdgesMap.values()) {
       nextEdges.push({ source: `comm_${u}`, target: `comm_${v}`, weight });
     }
     
@@ -330,9 +336,7 @@ export class GraphRAGStore {
       .select("id, email, bio_summary")
       .ilike("name", normName)
       .limit(1);
-    if (byName && byName.length > 0) {
-      return byName[0].id;
-    }
+    if (byName && byName.length > 0) return byName[0].id;
     
     // 3. Vector Similarity check
     const embedding = await getEmbedding(`${normName} ${organization || ""}`);
@@ -364,7 +368,7 @@ export class GraphRAGStore {
     const { data: inserted, error: insErr } = await this.supabase
       .from("contacts")
       .insert({
-        email: cleanEmail,
+        email: cleanEmail || null, // never store empty string — causes false matches on eq("email", "")
         name: name,
         organization: organization || null,
         bio_summary: bio,
@@ -374,8 +378,14 @@ export class GraphRAGStore {
       .single();
       
     if (insErr) {
-      const { data: fallback } = await this.supabase.from("contacts").select("id").eq("email", cleanEmail).maybeSingle();
-      return fallback?.id || crypto.randomUUID();
+      // Race-condition: another concurrent insert may have won — re-fetch by email or name
+      if (cleanEmail) {
+        const { data: fallback } = await this.supabase.from("contacts").select("id").eq("email", cleanEmail).maybeSingle();
+        if (fallback?.id) return fallback.id;
+      }
+      const { data: fallbackByName } = await this.supabase.from("contacts").select("id").ilike("name", name).limit(1);
+      if (fallbackByName?.[0]?.id) return fallbackByName[0].id;
+      throw new Error(`resolveContact: insert failed for "${name}" (${cleanEmail}): ${insErr.message}`);
     }
     return inserted.id;
   }
@@ -399,8 +409,10 @@ export class GraphRAGStore {
       .single();
       
     if (error) {
+      // Race-condition: try exact-match re-fetch before giving up
       const { data: fallback } = await this.supabase.from("projects").select("id").eq("name", name.trim()).maybeSingle();
-      return fallback?.id || crypto.randomUUID();
+      if (fallback?.id) return fallback.id;
+      throw new Error(`resolveProject: insert failed for "${name}": ${error.message}`);
     }
     return inserted.id;
   }
@@ -537,7 +549,10 @@ export class GraphRAGStore {
       try {
         if (ent.entityType === "CONTACT" || ent.entityType === "ORGANIZATION") {
           type = "contact";
-          entityUuid = await this.resolveContact(ent.name, "", ent.entityType === "ORGANIZATION" ? ent.name : undefined);
+          // Pass null-ish email for LLM-extracted contacts — passing "" causes all nameless contacts to
+          // collide in the DB via eq("email", "") lookup. resolveContact now stores null for blank emails.
+          const orgHint = ent.entityType === "ORGANIZATION" ? ent.name : undefined;
+          entityUuid = await this.resolveContact(ent.name, "", orgHint);
         } else if (ent.entityType === "PROJECT" || ent.entityType === "TOPIC") {
           type = "project";
           entityUuid = await this.resolveProject(ent.name, ent.description);
@@ -633,20 +648,26 @@ export class GraphRAGStore {
     const nodes = Array.from(nodeSet);
     
     // Sum edge occurrences to compute weights
+    // Maps canonical edge key -> { source, target, weight }
+    // NOTE: UUIDs use hyphens so we cannot split on '_'. We store src/tgt alongside the weight map.
     const edgeWeights = new Map<string, number>();
+    const edgePairs   = new Map<string, { src: string; tgt: string }>();
     const edgeDescriptions = new Map<string, string[]>();
     for (const e of edges) {
-      const key = e.source_id <= e.target_id ? `${e.source_id}_${e.target_id}` : `${e.target_id}_${e.source_id}`;
+      const [a, b] = e.source_id <= e.target_id
+        ? [e.source_id, e.target_id]
+        : [e.target_id, e.source_id];
+      const key = `${a}||${b}`; // '||' is safe — UUIDs only contain hex + hyphens
       edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
-      
+      if (!edgePairs.has(key)) edgePairs.set(key, { src: a, tgt: b });
       if (!edgeDescriptions.has(key)) edgeDescriptions.set(key, []);
       edgeDescriptions.get(key)!.push(`${e.relationship_type}: ${e.description}`);
     }
     
     const louvainEdges: LouvainEdge[] = [];
     for (const [key, weight] of edgeWeights.entries()) {
-      const [src, tgt] = key.split('_');
-      louvainEdges.push({ source: src, target: tgt, weight });
+      const pair = edgePairs.get(key)!;
+      louvainEdges.push({ source: pair.src, target: pair.tgt, weight });
     }
     
     const nodeToCommunity = runLouvain(nodes, louvainEdges);

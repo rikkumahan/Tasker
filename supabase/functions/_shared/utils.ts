@@ -45,3 +45,71 @@ export const lenientParseArray = (text: string): any[] | null => {
     } catch { return null; }
   }
 };
+
+// ─────────────────────────────────────────────
+// EMAIL CLEANING PIPELINE
+// ─────────────────────────────────────────────
+
+/**
+ * cleanEmailBody — strips noise before LLM ingestion.
+ * Removes: HTML tags, quoted reply chains (> prefix lines),
+ * signature delimiters (-- / ___), collapses whitespace.
+ */
+export function cleanEmailBody(raw: string): string {
+  if (!raw) return "";
+  let text = raw;
+
+  // Strip HTML tags
+  text = text.replace(/<[^>]{0,200}>/g, " ");
+  // Decode common HTML entities
+  text = text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
+  // Remove quoted reply lines (lines starting with > or >>)
+  text = text.split("\n").filter(line => !/^\s*>/.test(line)).join("\n");
+  // Remove signature blocks (common delimiters)
+  text = text.replace(/^(-{2,}|_{2,}|={2,})\s*$/gm, "\n");
+  // Collapse everything after a signature delimiter
+  const sigIdx = text.search(/\n(-{2,}|_{2,})\s*\n/);
+  if (sigIdx > 0) text = text.substring(0, sigIdx);
+  // Collapse excessive whitespace
+  text = text.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+
+  return text;
+}
+
+/**
+ * isSpamOrAd — free heuristic check, no LLM needed.
+ * Returns true if the email is almost certainly promotional/system noise.
+ */
+export function isSpamOrAd(subject: string, sender: string, body: string): boolean {
+  const s = subject.toLowerCase();
+  const from = sender.toLowerCase();
+
+  // No-reply senders are almost always automated
+  if (/noreply|no-reply|donotreply|do-not-reply|notifications?@|alerts?@|newsletter@|marketing@|promo@|deals@|offers@|unsubscribe@/.test(from)) {
+    return true;
+  }
+  // OTP / verification codes — never useful for task extraction
+  if (/\b(otp|verification code|verify|your code is|one.?time|passcode|login code|sign.?in code)\b/.test(s)) {
+    return true;
+  }
+  // Obvious promotional subject lines
+  if (/\b(off|sale|discount|coupon|promo|offer|deal|clearance|limited time|% off|flash sale|buy now|shop now|order confirmed|receipt|invoice from)\b/.test(s)) {
+    return true;
+  }
+  // Unsubscribe presence in body (strong spam signal)
+  if (body && /unsubscribe|opt.?out|manage preferences|email preferences/i.test(body.substring(0, 500))) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * isWorthProcessing — returns false if the cleaned body
+ * has fewer than 15 words (trivially short, nothing to extract).
+ */
+export function isWorthProcessing(cleanedBody: string): boolean {
+  if (!cleanedBody) return false;
+  const wordCount = cleanedBody.trim().split(/\s+/).filter(w => w.length > 0).length;
+  return wordCount >= 15;
+}

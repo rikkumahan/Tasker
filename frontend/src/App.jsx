@@ -85,11 +85,26 @@ export default function App() {
 
   // ── Onboarding State ──
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showMindToast, setShowMindToast] = useState(false);
   const [onboardingChat, setOnboardingChat] = useState([]);
   const [onboardingInput, setOnboardingInput] = useState('');
   const [onboardingChatLoading, setOnboardingChatLoading] = useState(false);
   const [synthesizing, setSynthesizing] = useState(false);
   const [synthesisStatus, setSynthesisStatus] = useState('');
+
+  // ── Wizard State (replaces chat onboarding for new users) ──
+  const [wizardStep, setWizardStep] = useState(null); // null | 2 | 3 | 4 | 'progress'
+  const [wizardFlags, setWizardFlags] = useState({
+    lookbackDays: 30,
+    trackingPrefs: ['tasks', 'deadlines', 'people', 'projects'],
+    gmailLabels: ['IMPORTANT', 'INBOX'],
+    customLabelIds: [],
+    otherText: '',
+    useCustomLabels: false,
+  });
+  const [availableLabels, setAvailableLabels] = useState([]);
+  const [labelsLoading, setLabelsLoading] = useState(false);
+  const [onboardingProgress, setOnboardingProgress] = useState({ threads_total: 0, threads_done: 0, eta_seconds: 0, queue_position: 0 });
   const onboardingChatRef = React.useRef(null);
   const mindChatRef = React.useRef(null);
 
@@ -117,6 +132,8 @@ export default function App() {
   const settingsDebounceRef = React.useRef(null);
   const initialSyncDoneRef = React.useRef(false); // Guard against recursive sync or onboarding loops
   const onboardingTriggeredRef = React.useRef(false); // Prevent double onboarding from race conditions
+  const onboardingPollRef = React.useRef(null);       // Interval ID for onboarding_status polling
+  const providerTokenRef = React.useRef(null);         // Stores OAuth tokens during wizard flow
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -180,6 +197,7 @@ export default function App() {
       if (channel && supabase) supabase.removeChannel(channel);
       if (settingsChannel && supabase) supabase.removeChannel(settingsChannel);
       if (pollRef.current) clearInterval(pollRef.current);
+      if (onboardingPollRef.current) clearInterval(onboardingPollRef.current);
       if (taskDebounceRef.current) clearTimeout(taskDebounceRef.current);
       if (settingsDebounceRef.current) clearTimeout(settingsDebounceRef.current);
     };
@@ -393,21 +411,28 @@ export default function App() {
   const checkSyncHealth = async (sess) => {
     if (initialSyncDoneRef.current || !sess) return;
     initialSyncDoneRef.current = true;
-    
-    // Fetch critical health metrics
+
     const { data: settings } = await supabase
       .from('user_settings')
-      .select('user_profile, last_synced_at')
+      .select('user_profile, last_synced_at, onboarding_status, onboarding_progress')
       .eq('user_id', sess.user.id)
       .maybeSingle();
-    
+
+    // Returning user who has an onboarding in flight — resume progress screen
+    if (settings?.onboarding_status === 'queued' || settings?.onboarding_status === 'processing') {
+      console.log('[INFO] Onboarding in progress, resuming progress screen.');
+      if (settings.onboarding_progress) setOnboardingProgress(settings.onboarding_progress);
+      setWizardStep('progress');
+      startOnboardingPolling(sess);
+      return;
+    }
+
     const DEFAULT_PROFILE = "A busy professional seeking to organize their schedule, extract actionable tasks from communications, and manage deadlines efficiently.";
     if (!settings || !settings.user_profile || settings.user_profile === DEFAULT_PROFILE) {
-      console.log('[INFO] User needs onboarding. Showing AI Mind Center...');
-      setShowOnboarding(true);
-      setOnboardingChat([{ sender: 'ai', text: "Ayo Boss! 👋 I'm your elite Tasker AI Chief of Staff. Let's calibrate your cognitive matrix. First up — tell me who you are and what your active hustle looks like right now." }]);
+      console.log('[INFO] New user detected. Showing setup wizard...');
+      setWizardStep(2);
     } else if (settings.last_synced_at) {
-      console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago. Use sync button to refresh.`);
+      console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago.`);
     }
   };
 
@@ -417,21 +442,16 @@ export default function App() {
       return;
     }
     onboardingTriggeredRef.current = true;
-    setLoading(true);
-    try {
-        console.log('[INFO] Bootstrapping new user settings and registering push (No task extraction yet)...');
-        const providerToken = sess?.provider_token;
-        const providerRefreshToken = sess?.provider_refresh_token;
-        
-        // Pass bootstrap_only flag to triggerSync
-        await triggerSync(sess, null, { providerToken, providerRefreshToken, bootstrap_only: true });
-        
-        // Now that settings are created, check health to show the onboarding chat
-        await checkSyncHealth(sess);
-    } catch (e) {
-        console.error("Bootstrap error", e);
-    }
-    setLoading(false);
+
+    // Store OAuth tokens so the wizard can use them on completion
+    providerTokenRef.current = {
+      providerToken: sess?.provider_token,
+      providerRefreshToken: sess?.provider_refresh_token,
+    };
+
+    // Show wizard immediately — no sync call needed yet
+    setWizardStep(2);
+    await fetchTasks(sess);
   };
 
   // Core sync trigger — shared by button AND auto-stale check
@@ -486,6 +506,96 @@ export default function App() {
       const elapsed = Date.now() - triggerStart;
       const wait = Math.max(1500 - elapsed, 0);
       setTimeout(() => setSyncing(false), wait);
+    }
+  };
+
+  // ── WIZARD: Fetch user's Gmail labels for Step 4 label picker ──
+  const fetchAvailableLabels = async () => {
+    setLabelsLoading(true);
+    try {
+      const sess = sessionRef.current;
+      const { data, error } = await supabase.functions.invoke('labels', {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${sess.access_token}` }
+      });
+      if (!error && data?.labels) setAvailableLabels(data.labels);
+    } catch (e) {
+      console.error('[LABELS] Fetch error:', e);
+    }
+    setLabelsLoading(false);
+  };
+
+  // ── WIZARD: Poll onboarding_status every 10s until 'complete' ──
+  const startOnboardingPolling = (sess) => {
+    if (onboardingPollRef.current) clearInterval(onboardingPollRef.current);
+    onboardingPollRef.current = setInterval(async () => {
+      const activeSess = sess || sessionRef.current;
+      if (!activeSess) return;
+      try {
+        const { data: settings } = await supabase
+          .from('user_settings')
+          .select('onboarding_status, onboarding_progress')
+          .eq('user_id', activeSess.user.id)
+          .maybeSingle();
+
+        if (settings?.onboarding_progress) {
+          setOnboardingProgress(settings.onboarding_progress);
+        }
+        if (settings?.onboarding_status === 'complete') {
+          clearInterval(onboardingPollRef.current);
+          onboardingPollRef.current = null;
+          setWizardStep(null);
+          await fetchTasks(activeSess);
+        }
+      } catch (e) {
+        console.error('[POLL] onboarding_status poll error:', e);
+      }
+    }, 10000); // every 10 seconds
+  };
+
+  // ── WIZARD: Called when user clicks "Start Syncing" on Step 4 ──
+  const handleWizardComplete = async () => {
+    const sess = sessionRef.current;
+    if (!sess) return;
+    setSyncing(true);
+    try {
+      const effective = wizardFlags.lookbackDays === -1
+        ? (wizardFlags.customDays || 60)
+        : wizardFlags.lookbackDays;
+
+      const syncFlags = {
+        lookback_days: effective,
+        tracking_preferences: [
+          ...wizardFlags.trackingPrefs,
+          ...(wizardFlags.otherText.trim() ? [wizardFlags.otherText.trim()] : []),
+        ],
+        gmail_labels: wizardFlags.gmailLabels,
+        custom_label_ids: wizardFlags.customLabelIds,
+      };
+
+      const tokens = providerTokenRef.current || {};
+      const { data, error } = await supabase.functions.invoke('sync', {
+        body: {
+          ...tokens,
+          sync_flags: syncFlags,
+          bootstrap_only: true,
+        },
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${sess.access_token}` }
+      });
+
+      if (error) throw error;
+
+      setOnboardingProgress({
+        threads_total: 0,
+        threads_done: 0,
+        eta_seconds: data?.estimated_total_seconds || 300,
+        queue_position: data?.queue_position || 0,
+      });
+      setWizardStep('progress');
+      startOnboardingPolling(sess);
+    } catch (e) {
+      console.error('[WIZARD] handleWizardComplete error:', e);
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -788,7 +898,7 @@ export default function App() {
                 </span>
               )}
               <button
-                onClick={() => { setIsMindOpen(true); if (mindChat.length === 0) setMindChat([{ sender: 'ai', text: 'Hey! I\'m your AI Mind companion. Ask me to adjust categories, track specific senders, or refine how I extract tasks from your inbox.' }]); }}
+                onClick={() => { setShowMindToast(true); setTimeout(() => setShowMindToast(false), 3000); }}
                 className="mind-btn"
                 title="AI Mind Center"
               >
@@ -1126,6 +1236,23 @@ export default function App() {
             </>
           )}
 
+          {/* ═══ UNDER DEVELOPMENT TOAST ═══ */}
+          {showMindToast && (
+            <div style={{
+              position: 'fixed', bottom: '2rem', left: '50%', transform: 'translateX(-50%)',
+              background: 'var(--surface-2, #1e1e2e)', border: '1px solid var(--accent)',
+              borderRadius: '12px', padding: '0.85rem 1.5rem',
+              display: 'flex', alignItems: 'center', gap: '0.65rem',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 9999,
+              animation: 'fadeInUp 0.25s ease'
+            }}>
+              <span style={{ fontSize: '1.2rem' }}>🚧</span>
+              <span style={{ color: 'var(--text-primary, #fff)', fontWeight: 600, fontSize: '0.9rem' }}>
+                AI Mind Center — Under Development
+              </span>
+            </div>
+          )}
+
           {/* ═══ CITATION CONTEXT MODAL ═══ */}
           {activeCitation && (
             <>
@@ -1175,43 +1302,226 @@ export default function App() {
         </>
       )}
 
-      {/* ═══ ONBOARDING OVERLAY (New Users) ═══ */}
-      {showOnboarding && (
+      {/* ═══ ONBOARDING WIZARD (New Users) ═══ */}
+      {wizardStep !== null && (
+        <div className="onboarding-overlay">
+          <div className="onboarding-card" style={{ maxWidth: '520px', width: '100%' }}>
+
+            {/* Header */}
+            <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+              <h1 style={{ margin: 0, fontSize: '1.5rem' }}>Welcome to Tasker</h1>
+              {wizardStep !== 'progress' && (
+                <p className="subtitle" style={{ margin: '0.5rem 0 0' }}>Set up your inbox in 3 quick steps</p>
+              )}
+            </div>
+
+            {/* Step progress dots */}
+            {wizardStep !== 'progress' && (
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '1.75rem' }}>
+                {[2, 3, 4].map(s => (
+                  <div key={s} style={{
+                    width: '36px', height: '4px', borderRadius: '2px',
+                    background: wizardStep >= s ? 'var(--accent)' : 'var(--surface-3, #2a2a3a)',
+                    transition: 'background 0.3s'
+                  }} />
+                ))}
+              </div>
+            )}
+
+            {/* ── STEP 2: Time range ── */}
+            {wizardStep === 2 && (
+              <div>
+                <h2 style={{ margin: '0 0 0.4rem', fontSize: '1.05rem' }}>📅 How far back should we look?</h2>
+                <p style={{ margin: '0 0 1.25rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>We'll fetch emails from this period to build your knowledge graph.</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.625rem', marginBottom: '1.25rem' }}>
+                  {[{ label: '7 days', value: 7 }, { label: '30 days', value: 30 }, { label: '90 days', value: 90 }].map(({ label, value }) => (
+                    <button key={value} onClick={() => setWizardFlags(f => ({ ...f, lookbackDays: value }))} style={{
+                      padding: '0.85rem', borderRadius: '10px', cursor: 'pointer', fontWeight: 600, fontSize: '0.9rem', transition: 'all 0.2s',
+                      border: `2px solid ${wizardFlags.lookbackDays === value ? 'var(--accent)' : 'var(--surface-3, #2a2a3a)'}`,
+                      background: wizardFlags.lookbackDays === value ? 'rgba(139,92,246,0.12)' : 'var(--surface-2, #1e1e2e)',
+                      color: 'var(--text-primary, #fff)',
+                    }}>{label}</button>
+                  ))}
+                  <button onClick={() => setWizardFlags(f => ({ ...f, lookbackDays: -1 }))} style={{
+                    padding: '0.85rem', borderRadius: '10px', cursor: 'pointer', fontWeight: 600, fontSize: '0.9rem', transition: 'all 0.2s',
+                    border: `2px solid ${wizardFlags.lookbackDays === -1 ? 'var(--accent)' : 'var(--surface-3, #2a2a3a)'}`,
+                    background: wizardFlags.lookbackDays === -1 ? 'rgba(139,92,246,0.12)' : 'var(--surface-2, #1e1e2e)',
+                    color: 'var(--text-primary, #fff)',
+                  }}>Custom</button>
+                </div>
+                {wizardFlags.lookbackDays === -1 && (
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '1.25rem' }}>
+                    <input type="number" min={1} max={365} placeholder="Days" defaultValue={60}
+                      onChange={e => setWizardFlags(f => ({ ...f, customDays: parseInt(e.target.value) || 60 }))}
+                      style={{ padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--surface-3,#2a2a3a)', background: 'var(--surface-2,#1e1e2e)', color: 'var(--text-primary,#fff)', width: '90px', fontSize: '0.9rem' }}
+                    />
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>days back</span>
+                  </div>
+                )}
+                <button className="onboarding-send" onClick={() => setWizardStep(3)} style={{ width: '100%', padding: '0.85rem', fontSize: '1rem' }}>Next →</button>
+              </div>
+            )}
+
+            {/* ── STEP 3: Tracking preferences ── */}
+            {wizardStep === 3 && (
+              <div>
+                <h2 style={{ margin: '0 0 0.4rem', fontSize: '1.05rem' }}>🎯 What matters to you?</h2>
+                <p style={{ margin: '0 0 1.25rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>We'll focus on these areas when extracting insights.</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginBottom: '1rem' }}>
+                  {[{ id: 'tasks', label: '📋 Tasks & Action Items' }, { id: 'deadlines', label: '⏰ Deadlines & Commitments' }, { id: 'people', label: '👥 People & Follow-ups' }, { id: 'projects', label: '📁 Projects & Threads' }].map(({ id, label }) => {
+                    const checked = wizardFlags.trackingPrefs.includes(id);
+                    return (
+                      <label key={id} style={{
+                        display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.7rem 1rem',
+                        borderRadius: '10px', cursor: 'pointer', userSelect: 'none', transition: 'all 0.2s',
+                        border: `2px solid ${checked ? 'var(--accent)' : 'var(--surface-3,#2a2a3a)'}`,
+                        background: checked ? 'rgba(139,92,246,0.08)' : 'var(--surface-2,#1e1e2e)',
+                      }}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setWizardFlags(f => ({ ...f, trackingPrefs: checked ? f.trackingPrefs.filter(p => p !== id) : [...f.trackingPrefs, id] }))}
+                          style={{ accentColor: 'var(--accent)', width: '16px', height: '16px' }} />
+                        <span style={{ color: 'var(--text-primary,#fff)', fontWeight: 500 }}>{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <input className="onboarding-input" placeholder="Other (e.g. Legal, Finance, Compliance...)" value={wizardFlags.otherText}
+                  onChange={e => setWizardFlags(f => ({ ...f, otherText: e.target.value }))}
+                  style={{ width: '100%', boxSizing: 'border-box', marginBottom: '1.25rem' }} />
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button onClick={() => setWizardStep(2)} style={{ flex: 1, padding: '0.85rem', borderRadius: '10px', border: '1px solid var(--surface-3,#2a2a3a)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.9rem' }}>← Back</button>
+                  <button className="onboarding-send" onClick={() => { setWizardStep(4); fetchAvailableLabels(); }} style={{ flex: 2, padding: '0.85rem', fontSize: '1rem' }}>Next →</button>
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 4: Source selection + label picker ── */}
+            {wizardStep === 4 && (
+              <div>
+                <h2 style={{ margin: '0 0 0.4rem', fontSize: '1.05rem' }}>📂 Where should we look?</h2>
+                <p style={{ margin: '0 0 1.25rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Pick your email sources. We'll skip promotions, social, and updates automatically.</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginBottom: '1rem' }}>
+                  {[{ id: 'IMPORTANT', label: '⭐ Important', desc: 'Gmail-curated · Recommended' }, { id: 'INBOX', label: '📥 Inbox', desc: 'All incoming emails' }, { id: 'SENT', label: '📤 Sent', desc: 'Emails you replied to' }].map(({ id, label, desc }) => {
+                    const checked = wizardFlags.gmailLabels.includes(id);
+                    return (
+                      <label key={id} style={{
+                        display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.7rem 1rem',
+                        borderRadius: '10px', cursor: 'pointer', userSelect: 'none', transition: 'all 0.2s',
+                        border: `2px solid ${checked ? 'var(--accent)' : 'var(--surface-3,#2a2a3a)'}`,
+                        background: checked ? 'rgba(139,92,246,0.08)' : 'var(--surface-2,#1e1e2e)',
+                      }}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setWizardFlags(f => ({ ...f, gmailLabels: checked ? f.gmailLabels.filter(l => l !== id) : [...f.gmailLabels, id] }))}
+                          style={{ accentColor: 'var(--accent)', width: '16px', height: '16px' }} />
+                        <div>
+                          <div style={{ color: 'var(--text-primary,#fff)', fontWeight: 600, fontSize: '0.9rem' }}>{label}</div>
+                          <div style={{ color: 'var(--text-secondary)', fontSize: '0.775rem' }}>{desc}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {/* Custom Gmail labels */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={wizardFlags.useCustomLabels}
+                    onChange={e => setWizardFlags(f => ({ ...f, useCustomLabels: e.target.checked }))}
+                    style={{ accentColor: 'var(--accent)', width: '16px', height: '16px' }} />
+                  <span style={{ color: 'var(--text-primary,#fff)', fontWeight: 500 }}>🏷️ Use my Gmail labels</span>
+                </label>
+                {wizardFlags.useCustomLabels && (
+                  <div style={{ border: '1px solid var(--surface-3,#2a2a3a)', borderRadius: '10px', padding: '0.5rem', maxHeight: '160px', overflowY: 'auto', marginBottom: '1rem' }}>
+                    {labelsLoading ? (
+                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', padding: '0.5rem' }}>Loading your labels...</div>
+                    ) : availableLabels.length === 0 ? (
+                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', padding: '0.5rem' }}>No custom labels found in Gmail.</div>
+                    ) : availableLabels.map(lbl => {
+                      const checked = wizardFlags.customLabelIds.includes(lbl.id);
+                      return (
+                        <label key={lbl.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.375rem 0.6rem', borderRadius: '6px', cursor: 'pointer', background: checked ? 'rgba(139,92,246,0.1)' : 'transparent' }}>
+                          <input type="checkbox" checked={checked}
+                            onChange={() => setWizardFlags(f => ({ ...f, customLabelIds: checked ? f.customLabelIds.filter(id => id !== lbl.id) : [...f.customLabelIds, lbl.id] }))}
+                            style={{ accentColor: 'var(--accent)', width: '14px', height: '14px' }} />
+                          <span style={{ color: 'var(--text-primary,#fff)', fontSize: '0.85rem' }}>{lbl.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button onClick={() => setWizardStep(3)} style={{ flex: 1, padding: '0.85rem', borderRadius: '10px', border: '1px solid var(--surface-3,#2a2a3a)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.9rem' }}>← Back</button>
+                  <button className="onboarding-send" onClick={handleWizardComplete}
+                    disabled={syncing || wizardFlags.gmailLabels.length === 0}
+                    style={{ flex: 2, padding: '0.85rem', fontSize: '1rem' }}>
+                    {syncing ? 'Setting up...' : '🚀 Start Syncing'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── PROGRESS SCREEN ── */}
+            {wizardStep === 'progress' && (() => {
+              const { threads_total, threads_done, eta_seconds, queue_position } = onboardingProgress;
+              const etaMins = Math.ceil((eta_seconds || 0) / 60);
+              const pct = threads_total > 0 ? Math.round((threads_done / threads_total) * 100) : 0;
+              return (
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚙️</div>
+                  <h2 style={{ margin: '0 0 0.5rem', fontSize: '1.1rem' }}>Setting up your workspace...</h2>
+                  <p style={{ margin: '0 0 1.75rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Your graph is being built in the background.</p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', textAlign: 'left', marginBottom: '1.5rem' }}>
+                    {[{ label: 'Emails fetched', done: threads_total > 0, extra: threads_total > 0 ? `${threads_total} threads found` : 'Scanning...' },
+                      { label: 'Filtering noise', done: threads_total > 0, extra: '' },
+                      { label: 'Building your graph', done: false, extra: etaMins > 0 ? `~${etaMins} min remaining` : 'Queued...' }].map(({ label, done, extra }, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.7rem 1rem', borderRadius: '10px', background: 'var(--surface-2,#1e1e2e)' }}>
+                        <span style={{ fontSize: '1rem' }}>{done ? '✅' : '⏳'}</span>
+                        <div>
+                          <div style={{ color: 'var(--text-primary,#fff)', fontWeight: 500, fontSize: '0.875rem' }}>{label}</div>
+                          {extra && <div style={{ color: 'var(--text-secondary)', fontSize: '0.775rem' }}>{extra}</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {threads_total > 0 && (
+                    <div style={{ marginBottom: '1rem' }}>
+                      <div style={{ background: 'var(--surface-3,#2a2a3a)', borderRadius: '99px', height: '6px', overflow: 'hidden' }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: 'var(--accent)', borderRadius: '99px', transition: 'width 1s ease' }} />
+                      </div>
+                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.775rem', marginTop: '0.25rem' }}>{pct}% complete</div>
+                    </div>
+                  )}
+                  {queue_position > 0 && (
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.825rem', margin: '0 0 0.75rem' }}>
+                      {queue_position} user{queue_position > 1 ? 's' : ''} ahead of you in queue
+                    </p>
+                  )}
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', margin: 0 }}>You can close this tab — we'll continue in the background.</p>
+                </div>
+              );
+            })()}
+
+          </div>
+        </div>
+      )}
+
+      {/* Legacy chat onboarding — kept for fallback, no longer triggered by default */}
+      {showOnboarding && wizardStep === null && (
         <div className="onboarding-overlay">
           <div className="onboarding-card">
             <h1>Welcome to Tasker AI</h1>
             <p className="subtitle">Let's calibrate your personal AI mind in 3 quick steps</p>
-
             {synthesizing ? (
-              <div className="synthesis-loading">
-                <div className="synthesis-orb" />
-                <p className="synthesis-status">{synthesisStatus}</p>
-              </div>
+              <div className="synthesis-loading"><div className="synthesis-orb" /><p className="synthesis-status">{synthesisStatus}</p></div>
             ) : (
               <>
                 <div className="onboarding-chat-area" ref={onboardingChatRef}>
                   {onboardingChat.map((m, i) => <div key={i} className={`chat-bubble ${m.sender}`}>{m.text}</div>)}
-                  {onboardingChatLoading && (
-                    <div className="chat-bubble ai thinking-bubble">
-                      <span className="dot pulse-dot">•</span>
-                      <span className="dot pulse-dot" style={{ animationDelay: '0.2s' }}>•</span>
-                      <span className="dot pulse-dot" style={{ animationDelay: '0.4s' }}>•</span>
-                    </div>
-                  )}
+                  {onboardingChatLoading && (<div className="chat-bubble ai thinking-bubble"><span className="dot pulse-dot">•</span><span className="dot pulse-dot" style={{ animationDelay: '0.2s' }}>•</span><span className="dot pulse-dot" style={{ animationDelay: '0.4s' }}>•</span></div>)}
                 </div>
-
                 <div className="onboarding-input-area">
-                  <input
-                    className="onboarding-input"
-                    value={onboardingInput}
-                    onChange={e => setOnboardingInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleOnboardingSubmit()}
-                    placeholder={onboardingChatLoading ? "Calibrating..." : "Speak to your Chief of Staff..."}
-                    disabled={onboardingChatLoading}
-                  />
-                  <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || onboardingChatLoading}>
-                    Send <Send size={14} style={{ marginLeft: '4px' }} />
-                  </button>
+                  <input className="onboarding-input" value={onboardingInput} onChange={e => setOnboardingInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleOnboardingSubmit()} placeholder={onboardingChatLoading ? 'Calibrating...' : 'Speak to your Chief of Staff...'} disabled={onboardingChatLoading} />
+                  <button className="onboarding-send" onClick={handleOnboardingSubmit} disabled={!onboardingInput.trim() || onboardingChatLoading}>Send <Send size={14} style={{ marginLeft: '4px' }} /></button>
                 </div>
               </>
             )}

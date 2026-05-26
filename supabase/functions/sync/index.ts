@@ -1,42 +1,93 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
-import { decodeBody, sleep } from "../_shared/utils.ts";
+import { getCorsHeaders } from "../_shared/cors.ts";
+import { decodeBody, sleep, cleanEmailBody, isSpamOrAd, isWorthProcessing } from "../_shared/utils.ts";
 import { refreshGmailToken } from "../_shared/oauth.ts";
-import { extractRawTasks, evolvePersonaFromTasks, categorizeTasks, runWarningEngine } from "../_shared/stages.ts";
 import { GraphRAGStore } from "../_shared/graph.ts";
 
+// ─────────────────────────────────────────────
+// Constants — Groq free-tier aware
+// ─────────────────────────────────────────────
+const CALLS_PER_THREAD = 2;        // 1 LLM extraction + 1 embedding
+const GROQ_RPM_AGGREGATE = 120;    // 4 keys × 30 RPM
+const RATE_LIMIT_SECS_PER_THREAD = 60 / (GROQ_RPM_AGGREGATE / CALLS_PER_THREAD); // ~1s
+const SAFETY_FACTOR = 1.3;
+const SECS_PER_QUEUED_USER = 60;
+
+const THREAD_BATCH = 20;           // threads per sync call
+const DEDUP_THRESHOLD = 0.97;      // cosine similarity for near-duplicate skip
+const MAX_CONSECUTIVE_SKIPS = 3;   // guardrail: never skip more than 3 in a row
 
 // ─────────────────────────────────────────────
-// Supabase Edge Runtime Background Task Helper
-// Safely wraps EdgeRuntime.waitUntil for fire-and-forget work.
+// Supabase Edge Runtime fire-and-forget helper
 // ─────────────────────────────────────────────
 function fireAndForget(promise: Promise<any>) {
   try {
-    // @ts-ignore: EdgeRuntime is a Supabase-specific global
-    if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+    // @ts-ignore: EdgeRuntime is Supabase-specific
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
       EdgeRuntime.waitUntil(promise);
     }
   } catch {
-    // Fallback: let the promise run without tracking
-    promise.catch(err => console.error("[BG Task Error]", err));
+    promise.catch((err: any) => console.error("[BG Task Error]", err));
   }
 }
 
-// Non-blocking debug_logs helper — fire-and-forget via EdgeRuntime.waitUntil
 function asyncLog(supabaseAdmin: any, userId: string, event: string, data: any) {
-  const promise = supabaseAdmin.from("debug_logs").insert({ user_id: userId, event, data })
-    .then(() => {})
-    .catch((err: any) => console.error(`[ASYNC LOG] ${event} failed:`, err.message));
-  fireAndForget(promise);
+  const p = supabaseAdmin.from("debug_logs").insert({ user_id: userId, event, data })
+    .then(() => {}).catch((e: any) => console.error(`[ASYNC LOG] ${event} failed:`, e.message));
+  fireAndForget(p);
+}
+
+// ─────────────────────────────────────────────
+// Build Gmail query from sync_flags
+// ─────────────────────────────────────────────
+function buildGmailQuery(syncFlags: any, lastSyncedAt: string | null): string {
+  const parts: string[] = [];
+
+  // Base noise filter
+  parts.push("NOT category:promotions AND NOT category:social AND NOT category:updates");
+
+  // Source filters from wizard selection
+  const sources: string[] = [];
+  const labels: string[] = syncFlags?.gmail_labels || ["IMPORTANT", "INBOX"];
+  if (labels.includes("IMPORTANT")) sources.push("is:important");
+  if (labels.includes("INBOX"))     sources.push("in:inbox");
+  if (labels.includes("SENT"))      sources.push("in:sent");
+  for (const id of (syncFlags?.custom_label_ids || [])) {
+    sources.push(`label:${id}`);
+  }
+  if (sources.length > 0) parts.push(`(${sources.join(" OR ")})`);
+
+  // Tracking preference keyword enrichment
+  const prefs: string[] = syncFlags?.tracking_preferences || [];
+  const keywordMap: Record<string, string> = {
+    tasks:     "(action OR task OR \"to do\" OR \"follow up\" OR deadline OR \"please confirm\")",
+    deadlines: "(deadline OR due OR \"by end of\" OR commit OR \"please complete\" OR \"by tomorrow\")",
+    people:    "(introduction OR \"following up\" OR meeting OR contact OR schedule OR \"let's connect\")",
+    projects:  "(project OR milestone OR sprint OR update OR launch OR release OR \"next steps\")",
+  };
+  const kwParts = prefs.filter(p => keywordMap[p]).map(p => keywordMap[p]);
+  if (kwParts.length > 0) parts.push(`(${kwParts.join(" OR ")})`);
+
+  // Time filter — use last_synced_at for returning users, lookback_days for new users
+  if (lastSyncedAt) {
+    const after = Math.floor(new Date(lastSyncedAt).getTime() / 1000);
+    parts.push(`after:${after}`);
+  } else {
+    const days = syncFlags?.lookback_days || 30;
+    const after = Math.floor((Date.now() - days * 24 * 3600 * 1000) / 1000);
+    parts.push(`after:${after}`);
+  }
+
+  return parts.join(" ");
 }
 
 // ─────────────────────────────────────────────
 // MAIN EDGE FUNCTION HANDLER
 // ─────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
+  const corsHeaders = getCorsHeaders(req);
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  // Declare at top-level for error handler access
   let settings: any = null;
   let supabaseAdmin: any = null;
 
@@ -54,18 +105,20 @@ Deno.serve(async (req: Request) => {
     try { reqBody = await req.json(); } catch { }
     let tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
 
-    // Check if this is the internal service role key (used by background_worker)
+    // Service-role call from background_worker
     if (tokenStr === (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim() && reqBody.user_id) {
       user = { id: reqBody.user_id };
     } else {
       try {
-        const parts = tokenStr.split('.');
+        const parts = tokenStr.split(".");
         if (parts.length === 3) {
           const base64Url = parts[1];
-          let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          let base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
           const pad = base64.length % 4;
-          if (pad) base64 += '='.repeat(4 - pad);
-          const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+          if (pad) base64 += "=".repeat(4 - pad);
+          const jsonPayload = decodeURIComponent(
+            atob(base64).split("").map(c => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join("")
+          );
           const payload = JSON.parse(jsonPayload);
           if (payload.role === "service_role" && reqBody.user_id) {
             user = { id: reqBody.user_id };
@@ -78,467 +131,401 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Fallback for user session tokens that failed manual decode
     if (!user) {
-      const { data: authData, error: authErr } = await supabaseAdmin.auth.getUser(tokenStr);
+      const { data: authData } = await supabaseAdmin.auth.getUser(tokenStr);
       if (authData?.user) {
         user = { id: authData.user.id, email: authData.user.email };
-      } else {
-        console.error("Fallback getUser failed:", authErr?.message);
       }
     }
 
     if (!user) return new Response(JSON.stringify({ error: "Unauthorized (JWT Decode Failed)" }), { status: 401, headers: corsHeaders });
 
-    let { data: settingsData } = await supabaseAdmin.from("user_settings").select("*").eq("user_id", user.id).single();
+    // ── Fetch settings ──
+    const { data: settingsData } = await supabaseAdmin.from("user_settings").select("*").eq("user_id", user.id).single();
     settings = settingsData;
 
-    if (settings?.sync_status === 'REVOKED') {
-      console.log(`[OAUTH] User ${user.id} has revoked access. Bypassing engine.`);
+    if (settings?.sync_status === "REVOKED") {
       return new Response(JSON.stringify({ message: "Sync Revoked" }), { status: 200, headers: corsHeaders });
     }
 
-    // ── ONBOARDING BOOTSTRAP ──
+    // ── ONBOARDING BOOTSTRAP (first-ever call) ──
     if (!settings) {
-      if (!reqBody.providerToken) return new Response(JSON.stringify({ error: "Settings not found and no Gmail token provided" }), { status: 404, headers: corsHeaders });
+      if (!reqBody.providerToken) {
+        return new Response(JSON.stringify({ error: "Settings not found and no Gmail token provided" }), { status: 404, headers: corsHeaders });
+      }
 
+      const syncFlags = reqBody.sync_flags || {};
       settings = {
         user_id: user.id,
         gmail_email: user.email,
         gmail_token: { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || null },
-        user_profile: "A busy professional seeking to organize their schedule, extract actionable tasks from communications, and manage deadlines efficiently.",
-        categories: ["General", "Work", "Personal", "Admin"],
         last_synced_at: null,
-        recent_actions: []
+        sync_flags: syncFlags,
+        onboarding_status: "queued",
+        onboarding_progress: {},
       };
 
       const { data: inserted, error: insertError } = await supabaseAdmin.from("user_settings").insert(settings).select().single();
       if (insertError) throw new Error("Failed to bootstrap user settings: " + insertError.message);
       settings = inserted;
+      asyncLog(supabaseAdmin, user.id, "USER_BOOTSTRAPPED", { sync_flags: syncFlags });
 
-      asyncLog(supabaseAdmin, user.id, "USER_BOOTSTRAPPED", {});
-
-      // Register Gmail Webhook Watch
+      // Register Gmail Watch
       try {
         await fetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
-          method: "POST", headers: { Authorization: `Bearer ${reqBody.providerToken}`, "Content-Type": "application/json" },
+          method: "POST",
+          headers: { Authorization: `Bearer ${reqBody.providerToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ labelIds: ["INBOX"], topicName: `projects/${Deno.env.get("GOOGLE_CLOUD_PROJECT_ID")}/topics/tasker-gmail-push` })
         });
       } catch (e: any) { console.warn("Gmail watch error:", e.message); }
     }
 
+    // ── Update sync_flags if passed (wizard completion) ──
+    if (reqBody.sync_flags && settings) {
+      await supabaseAdmin.from("user_settings").update({
+        sync_flags: reqBody.sync_flags,
+        onboarding_status: "queued"
+      }).eq("user_id", user.id);
+      settings.sync_flags = reqBody.sync_flags;
+    }
 
+    // ── bootstrap_only: save settings + enqueue job, return immediately ──
+    if (reqBody.bootstrap_only) {
+      // Enqueue onboarding job (priority = 'onboarding')
+      await supabaseAdmin.from("sync_queue").insert({
+        user_id: user.id,
+        dedup_id: `onboarding_${user.id}`,
+        priority: "onboarding"
+      }).select();
 
-    asyncLog(supabaseAdmin, user.id, "V21_SYNC_START", {});
+      // Compute queue position for estimate
+      const { data: queuePos } = await supabaseAdmin.rpc("get_onboarding_queue_position", { p_user_id: user.id });
 
-    const isNewUser = !settings.last_synced_at || settings.user_profile?.includes("Initial Sync Stage");
+      return new Response(JSON.stringify({
+        success: true,
+        message: "Onboarding queued",
+        queue_position: queuePos ?? 0,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    asyncLog(supabaseAdmin, user.id, "GRAPHRAG_SYNC_START", {});
+
+    const isOnboarding = !settings.last_synced_at;
     let gmailToken = settings.gmail_token?.token;
     if (!gmailToken) return new Response(JSON.stringify({ error: "No Gmail Token" }), { status: 400, headers: corsHeaders });
 
     // ── SELF-HEALING CONCURRENCY LOCK ──
-    // A lock is considered VALID only if:
-    //   (a) sync_in_progress is true AND
-    //   (b) sync_lock_at is set AND less than 2 minutes old.
-    // Ghost locks (null timestamp) and stale locks (>2 min) are auto-broken.
-    const rawLockAt = (settings as any).sync_lock_at;
+    const rawLockAt = settings.sync_lock_at;
     const lockAge = rawLockAt ? (Date.now() - new Date(rawLockAt).getTime()) : Infinity;
-    const LOCK_TTL_MS = 2 * 60 * 1000; // 2 minutes (building stage)
-    const isSyncInProgress: boolean = (settings as any).sync_in_progress === true && lockAge < LOCK_TTL_MS;
+    const LOCK_TTL_MS = 2 * 60 * 1000;
+    const isSyncInProgress = settings.sync_in_progress === true && lockAge < LOCK_TTL_MS;
 
     if (isSyncInProgress) {
-      asyncLog(supabaseAdmin, user.id, "SYNC_LOCKED", { reason: "Another sync already in progress", lock_age_ms: lockAge });
-      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 0, locked: true }), {
+      asyncLog(supabaseAdmin, user.id, "SYNC_LOCKED", { reason: "Another sync in progress", lock_age_ms: lockAge });
+      return new Response(JSON.stringify({ success: true, threads_processed: 0, locked: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
     // ── ATOMIC LOCK ACQUISITION ──
     let lockAcquired: any[] = [];
-    const isStaleLock = (settings as any).sync_in_progress === true && lockAge >= LOCK_TTL_MS;
+    const isStaleLock = settings.sync_in_progress === true && lockAge >= LOCK_TTL_MS;
 
     if (isStaleLock) {
-      // Force-break stale lock — no conditional needed
-      const { data } = await supabaseAdmin
-        .from("user_settings")
+      const { data } = await supabaseAdmin.from("user_settings")
         .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
-        .eq("id", settings.id)
-        .select("id");
+        .eq("id", settings.id).select("id");
       lockAcquired = data || [];
-      asyncLog(supabaseAdmin, user.id, "SYNC_LOCK_BROKEN", { reason: "Stale lock auto-healed", lock_age_ms: lockAge });
+      asyncLog(supabaseAdmin, user.id, "SYNC_LOCK_BROKEN", { lock_age_ms: lockAge });
     } else {
-      // Normal case: conditional UPDATE prevents concurrent race
-      const { data } = await supabaseAdmin
-        .from("user_settings")
+      const { data } = await supabaseAdmin.from("user_settings")
         .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
-        .eq("id", settings.id)
-        .eq("sync_in_progress", false)
-        .select("id");
+        .eq("id", settings.id).eq("sync_in_progress", false).select("id");
       lockAcquired = data || [];
     }
 
     if (!lockAcquired || lockAcquired.length === 0) {
-      asyncLog(supabaseAdmin, user.id, "SYNC_LOCKED", { reason: "Atomic lock acquisition failed — concurrent sync won the race" });
-      return new Response(JSON.stringify({ success: true, tasks_extracted: 0, remaining: 0, locked: true }), {
+      asyncLog(supabaseAdmin, user.id, "SYNC_LOCKED", { reason: "Atomic lock failed — concurrent sync won the race" });
+      return new Response(JSON.stringify({ success: true, threads_processed: 0, locked: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
-    // ── GMAIL FETCH WITH PAGINATION SUPPORT ──
-    const maxResults = 25; // Optimal batch size for 120 RPM (4 keys × 30 RPM)
-    const storedPageToken: string | null = (settings as any).sync_page_token || null;
-    const lastSynced = settings.last_synced_at;
-    let query = "";
-    if (!storedPageToken && lastSynced) {
-      const after = Math.floor(new Date(lastSynced).getTime() / 1000);
-      query = `&q=after:${after}`;
-    }
-    const pageTokenParam = storedPageToken ? `&pageToken=${storedPageToken}` : "";
+    // ── GMAIL THREAD FETCH — Thread-First with Progressive Fallback ──
+    const syncFlags = settings.sync_flags || {};
+    const fullQuery = buildGmailQuery(syncFlags, settings.last_synced_at);
 
-    let listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}${query}${pageTokenParam}`, {
-      headers: { Authorization: `Bearer ${gmailToken}` }
-    });
+    // Get queue position for ETA calculation
+    const { data: queuePosition } = await supabaseAdmin.rpc("get_onboarding_queue_position", { p_user_id: user.id });
+    const queuePos = queuePosition ?? 0;
 
-    // ── OAUTH RETRY INTERCEPTOR ──
-    if (listRes.status === 401 && settings.gmail_token?.refresh_token) {
-      console.log(`[OAUTH] Token expired for user ${user.id}. Triggering Auto-Heal refresh routine...`);
-      const freshToken = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
-      if (!freshToken) {
-        return new Response(JSON.stringify({ message: "Failed to heal token" }), { status: 200, headers: corsHeaders });
-      }
-      gmailToken = freshToken;
-      // Re-fire the fetch synchronously
-      listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}${query}${pageTokenParam}`, {
-        headers: { Authorization: `Bearer ${gmailToken}` }
-      });
-    }
+    let threadIds: string[] = [];
+    let passUsed = 1;
 
-    let listData: any;
-    try {
-      listData = await listRes.json();
-    } catch {
-      console.error("[GMAIL] List response is not valid JSON, status:", listRes.status);
-      throw new Error("Gmail API returned non-JSON response");
-    }
-    const messages = listData.messages || [];
-    const nextPageToken: string | null = listData.nextPageToken || null;
-
-    asyncLog(supabaseAdmin, user.id, "GMAIL_FETCH", { count: messages.length, page_token: storedPageToken, next_page_token: nextPageToken });
-
-    // ── SEQUENTIAL DETAIL FETCH WITH SINGLE-REFRESH MUTEX ──
-    // BUG FIX: Previously used Promise.all which caused up to 25 concurrent OAuth refresh calls.
-    // Now fetches sequentially with a single-refresh guard to prevent token refresh storms.
-    let tokenRefreshed = false;
-    const emails: any[] = [];
-    for (const m of messages) {
-      try {
-        let detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
-          headers: { Authorization: `Bearer ${gmailToken}` }
-        });
-
-        // ── OAUTH RETRY INTERCEPTOR (Single-Refresh Guard) ──
-        if (detailRes.status === 401 && !tokenRefreshed && settings.gmail_token?.refresh_token) {
-          console.log(`[OAUTH] Token expired during detail fetch for user ${user.id}. Refreshing once...`);
-          const freshToken = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
-          if (freshToken) {
-            gmailToken = freshToken;
-            tokenRefreshed = true;
-            // Re-fire with fresh token
-            detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
-              headers: { Authorization: `Bearer ${gmailToken}` }
-            });
-          } else {
-            continue; // Skip this email if refresh failed
-          }
-        } else if (detailRes.status === 401) {
-          continue; // Token already refreshed once and still failing — skip
-        }
-
-        const fullMsg = await detailRes.json();
-        if (!fullMsg.payload) continue;
-        const headers = (fullMsg.payload.headers || []).reduce((acc: any, h: any) => ({ ...acc, [h.name]: h.value }), {});
-        const decodedBody = decodeBody(fullMsg.payload);
-        const body = (decodedBody !== null && decodedBody !== undefined)
-          ? decodedBody.substring(0, 1500).replace(/\n/g, " ").trim()
-          : "";
-        emails.push({
-          id: m.id,
-          subject: (headers.Subject !== null && headers.Subject !== undefined) ? headers.Subject : "(no subject)",
-          sender: (headers.From !== null && headers.From !== undefined) ? headers.From : "unknown",
-          date: (headers.Date !== null && headers.Date !== undefined) ? headers.Date : "",
-          body,
-          threadId: fullMsg.threadId
-        });
-      } catch { /* skip failed email */ }
-    }
-
-    // Save to raw_emails queue
-    if (emails.length > 0) {
-      const rawEmailInserts = emails.map((e: any) => ({
-        user_id: user.id,
-        message_id: e.id,
-        subject: e.subject,
-        snippet: e.body.substring(0, 500),
-        body: e.body,
-        received_at: e.date ? new Date(e.date).toISOString() : new Date().toISOString(),
-        status: "pending",
-        sender: e.sender,
-        thread_id: e.threadId
-      }));
-      await supabaseAdmin.from("raw_emails").upsert(rawEmailInserts, { onConflict: "user_id, message_id" });
-    }
-
-    if (reqBody.bootstrap_only) {
-      // Advance the page token so the next fetch gets new emails
-      await supabaseAdmin.from("user_settings").update({
-        sync_page_token: nextPageToken,
-        sync_in_progress: false,
-        sync_lock_at: null
-      }).eq("id", settings.id);
-      
-      return new Response(JSON.stringify({ success: true, message: "Bootstrapped and fetched raw emails." }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-
-    // Fetch batch from raw_emails queue for processing
-    const { data: pendingRaws } = await supabaseAdmin.from("raw_emails")
-      .select("*")
-      .eq("user_id", user.id)
-      .eq("status", "pending")
-      .order("received_at", { ascending: false })
-      .limit(15);
-
-    const unprocessedEmails = (pendingRaws || []).map((r: any) => ({
-      id: r.message_id,
-      subject: r.subject,
-      body: r.body,
-      db_id: r.id,
-      sender: r.sender || "unknown",
-      thread_id: r.thread_id || `raw_thread_${r.message_id}`,
-      received_at: r.received_at
-    }));
-
-    // Trigger Supabase/Deno Context-Aware Property Graph and GraphRAG Pipeline
-    if (unprocessedEmails.length > 0) {
-      const graphStore = new GraphRAGStore(supabaseAdmin);
-      const graphPipelinePromise = (async () => {
-        for (const email of unprocessedEmails.slice(0, 15)) {
-          try {
-            await graphStore.ingestEmailToGraph({
-              message_id: email.id,
-              subject: email.subject,
-              body: email.body,
-              sender: email.sender,
-              thread_id: email.thread_id,
-              received_at: email.received_at
-            }, user.id);
-          } catch (err) {
-            console.error(`[GraphRAG] Ingestion failed for email ${email.id}:`, err);
-          }
-        }
-        await graphStore.buildCommunities();
-      })();
-      fireAndForget(graphPipelinePromise);
-    }
-
-    // Pending tasks context for update detection
-    const { data: pendingTasksData } = await supabaseAdmin.from("tasks")
-      .select("id, title, deadline, category").eq("user_id", user.id).eq("status", "pending")
-      .order("deadline", { ascending: true }).limit(20);
-    const pendingTasksContext = (pendingTasksData || [])
-      .map((t: any) => `[TASK_ID: ${t.id}] "${t.title}" | Deadline: ${t.deadline || "none"} | Category: ${t.category}`).join("\n");
-
-    // Behavioral telemetry context
-    const recentActions: string[] = settings.recent_actions || [];
-
-    // Calculate Task Completion Rate from recentActions
-    const completedActions = recentActions.filter(action => action.startsWith("Completed"));
-    const deletedActions = recentActions.filter(action => action.startsWith("Deleted"));
-    const totalFinishedActions = completedActions.length + deletedActions.length;
-    const taskCompletionRate = totalFinishedActions > 0
-      ? (completedActions.length / totalFinishedActions)
-      : 0.5; // Default to neutral if no data
-
-    const actionContext = recentActions.length > 0
-      ? `\nUSER'S RECENT BEHAVIOR:\n${recentActions.join("\n")}\nTask Completion Rate: ${(taskCompletionRate * 100).toFixed(0)}% (Completed: ${completedActions.length}, Deleted: ${deletedActions.length})\nCRITICAL: If an email matches the type recently DELETED, assign category "Check_Out_Mail".`
-      : "";
-
-    // Default persona for brand new users
-    let currentProfile = settings.user_profile;
-    if (!currentProfile || currentProfile.includes("Initial Sync Stage") || currentProfile.trim() === "") {
-      currentProfile = "A busy professional seeking to organize their schedule, extract actionable tasks from communications, and manage deadlines efficiently.";
-    }
-    let currentCategories: string[] = settings.categories || [];
-    if (currentCategories.length === 0) {
-      currentCategories = ["Inbox", "General Tasks"];
-    }
-
-    const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-
-    // ══════════════════════════════════════════════════════════════
-    // CONCURRENT MATRIX ARCHITECTURE
-    // ══════════════════════════════════════════════════════════════
-
-    // STAGE 1: Universal Extraction (must complete before categorization)
-    const { rawTasks, successfullyProcessedIds: batchIds, rateLimitHit } = await extractRawTasks(
-      unprocessedEmails.slice(0, 15), pendingTasksContext, actionContext, nowIst, supabaseAdmin, user.id
-    );
-
-    if (rateLimitHit && batchIds.length === 0) {
-      // Release lock and bailout on rate limit
-      await supabaseAdmin.from("user_settings").update({ 
-        sync_in_progress: false, 
-        sync_lock_at: null,
-        last_sync_error: "⚠️ AI Sync paused due to high demand. Retrying in 60s..."
-      }).eq("id", settings.id);
-      return new Response(JSON.stringify({ error: "Rate Limit" }), { status: 429, headers: corsHeaders });
-    }
-
-    // ── THE CONCURRENT SPLIT ──
-    // Stage 2 (Persona Evolution) runs in the BACKGROUND via EdgeRuntime.waitUntil.
-    // Stage 3 (Categorization) runs on the CURRENT profile immediately.
-    // Result: We remove an entire LLM roundtrip from the critical path!
-    const shouldEvolve = rawTasks.length > 0;
-    if (shouldEvolve) {
-      fireAndForget(
-        evolvePersonaFromTasks(
-          rawTasks,
-          currentProfile,
-          currentCategories,
-          pendingTasksContext,
-          recentActions,
-          supabaseAdmin,
-          settings.id,
-          user.id
-        )
+    // Pass 1: Full query (category filter + source + keywords + time)
+    let tokenRefreshedOnList = false;
+    const fetchThreadList = async (query: string): Promise<any[]> => {
+      let res = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${THREAD_BATCH}&q=${encodeURIComponent(query)}`,
+        { headers: { Authorization: `Bearer ${gmailToken}` } }
       );
-    }
-
-    // STAGE 3: Persona-Aware Categorization (uses current profile, doesn't wait for evolution)
-    const { finalTasks, updatedTaskIds } = await categorizeTasks(
-      rawTasks, currentProfile, currentCategories, recentActions,
-      unprocessedEmails.slice(0, 15), supabaseAdmin, user.id, settings.id, nowIst
-    );
-
-    // Persist ghost tasks for emails that produced no actionable tasks
-    const batchEmails = unprocessedEmails.slice(0, 15);
-    const processedEmailIds = new Set(finalTasks.map(t => t.source_email_id));
-    const ghostTasks = batchEmails
-      .filter(e => !processedEmailIds.has(e.id))
-      .map(e => ({
-        title: "[IGNORED_EMAIL]",
-        summary: "Email skipped – no actionable tasks detected",
-        category: "System",
-        status: "ignored",
-        user_id: user.id,
-        source_email_id: e.id,
-      }));
-
-    // Welcome task for new users — check batch size, not total unprocessed
-    if (isNewUser && finalTasks.length === 0 && batchEmails.length <= 15) {
-      finalTasks.push({
-        title: "🚀 Welcome to Tasker AI!",
-        summary: ghostTasks.length > 0 
-          ? `I've analyzed your first ${batchEmails.length} emails. Good news: ${ghostTasks.length} promotional/spam emails were cleanly filtered out with zero clutter added to your list! I've also built your personalized task categories.`
-          : "I've analyzed your emails and built your personalized task categories!",
-        category: "Onboarding", status: "pending",
-        user_id: user.id, source_email_id: "onboarding_" + Date.now()
-      });
-    }
-
-    // Combine ghost tasks with any real tasks before upsert
-    const allTasksToUpsert = [...finalTasks, ...ghostTasks].map(t => ({
-      ...t,
-      status: t.status || "pending"
-    }));
-    if (allTasksToUpsert.length > 0) {
-      console.log(`[UPSERT] Attempting to upsert ${allTasksToUpsert.length} tasks (real: ${finalTasks.length}, ghost: ${ghostTasks.length})`);
-      try {
-        const { error: upsertError } = await supabaseAdmin.from("tasks").upsert(allTasksToUpsert, { onConflict: "source_email_id" });
-        if (upsertError) {
-          asyncLog(supabaseAdmin, user.id, "UPsert_ERROR", { error: upsertError.message, count: allTasksToUpsert.length });
-          throw new Error("Failed to persist tasks: " + upsertError.message);
-        }
-        console.log(`[UPSERT] Success`);
-      } catch (e: any) {
-        asyncLog(supabaseAdmin, user.id, "UPsert_CRASH", { error: e.message });
-        throw e;
+      if (res.status === 401 && !tokenRefreshedOnList && settings.gmail_token?.refresh_token) {
+        const fresh = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
+        if (fresh) { gmailToken = fresh; tokenRefreshedOnList = true; }
+        res = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${THREAD_BATCH}&q=${encodeURIComponent(query)}`,
+          { headers: { Authorization: `Bearer ${gmailToken}` } }
+        );
       }
+      if (!res.ok) return [];
+      const d = await res.json();
+      return d.threads || [];
+    };
+
+    let threads = await fetchThreadList(fullQuery);
+    asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P1", { count: threads.length, query: fullQuery });
+
+    // Pass 2: Relax keyword terms (keep source + category filter + time)
+    if (threads.length < 5) {
+      passUsed = 2;
+      const relaxedQuery = buildGmailQuery({ ...syncFlags, tracking_preferences: [] }, settings.last_synced_at);
+      threads = await fetchThreadList(relaxedQuery);
+      asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P2", { count: threads.length });
     }
 
-    // Warning Engine — fire-and-forget via EdgeRuntime.waitUntil (pure DB I/O)
-    // BUG FIX #6: Always run the warning engine to keep deadline badges fresh
-    fireAndForget(runWarningEngine(supabaseAdmin, user.id, finalTasks, updatedTaskIds));
-
-    const remainingCount = unprocessedEmails.length - batchIds.length;
-    const isPageDone = remainingCount === 0;
-
-    // Mark processed emails as done in raw_emails
-    if (unprocessedEmails.length > 0) {
-      const processedDbIds = unprocessedEmails.map((r: any) => r.db_id);
-      await supabaseAdmin.from("raw_emails").update({ status: "processed" }).in("id", processedDbIds);
+    // Pass 3: Bare — no query filter, just time window
+    if (threads.length < 5) {
+      passUsed = 3;
+      const days = syncFlags?.lookback_days || 30;
+      const after = Math.floor((Date.now() - days * 24 * 3600 * 1000) / 1000);
+      threads = await fetchThreadList(`after:${after}`);
+      asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P3", { count: threads.length });
     }
-    
-    // Check if there are more pending raw emails left to process
-    const { count: rawRemaining } = await supabaseAdmin.from("raw_emails")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("status", "pending");
 
-    // ── HANDOFF TO BACKGROUND WORKER ──
-    const safeRawRemaining = rawRemaining ?? 0;
-    console.log(`[HANDOFF] isPageDone=${isPageDone}, nextPageToken=${nextPageToken}, rawRemaining=${safeRawRemaining}`);
-    if (isPageDone && (nextPageToken || safeRawRemaining > 0)) {
+    // Fallback to messages if still empty
+    if (threads.length === 0) {
+      passUsed = 4;
+      const days = syncFlags?.lookback_days || 30;
+      const after = Math.floor((Date.now() - days * 24 * 3600 * 1000) / 1000);
+      let msgRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${THREAD_BATCH}&q=after:${after}`,
+        { headers: { Authorization: `Bearer ${gmailToken}` } }
+      );
+      if (msgRes.ok) {
+        const msgData = await msgRes.json();
+        const msgs = msgData.messages || [];
+        // Treat each message as its own "thread"
+        threads = msgs.map((m: any) => ({ id: m.threadId || m.id }));
+      }
+      asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P4_FALLBACK", { count: threads.length });
+    }
+
+    // Sort: threads where user replied (SENT label) go first
+    // We'll check label membership after fetching full thread data below
+    threadIds = [...new Set(threads.map((t: any) => t.id as string))];
+
+    // ── PROCESS EACH THREAD ──
+    let threadsProcessed = 0;
+    let threadsSkippedSpam = 0;
+    let threadsSkippedTrivial = 0;
+    let threadsSkippedDedup = 0;
+    let consecutiveSkips = 0;
+    let tokenRefreshed = false;
+
+    const graphStore = new GraphRAGStore(supabaseAdmin);
+
+    // Update onboarding_status to 'processing'
+    if (isOnboarding) {
       await supabaseAdmin.from("user_settings").update({
-        sync_page_token: nextPageToken || settings.sync_page_token,
+        onboarding_status: "processing",
+        onboarding_progress: {
+          threads_total: threadIds.length,
+          threads_done: 0,
+          eta_seconds: Math.ceil((threadIds.length * RATE_LIMIT_SECS_PER_THREAD * SAFETY_FACTOR) + (queuePos * SECS_PER_QUEUED_USER)),
+          queue_position: queuePos,
+        }
+      }).eq("user_id", user.id);
+    }
+
+    const graphPipeline = async () => {
+      for (let i = 0; i < threadIds.length; i++) {
+        const threadId = threadIds[i];
+        try {
+          // Fetch full thread
+          let threadRes = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=full`,
+            { headers: { Authorization: `Bearer ${gmailToken}` } }
+          );
+
+          // Single-refresh guard
+          if (threadRes.status === 401 && !tokenRefreshed && settings.gmail_token?.refresh_token) {
+            const fresh = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
+            if (fresh) { gmailToken = fresh; tokenRefreshed = true; }
+            threadRes = await fetch(
+              `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=full`,
+              { headers: { Authorization: `Bearer ${gmailToken}` } }
+            );
+          }
+          if (!threadRes.ok) continue;
+
+          const threadData = await threadRes.json();
+          const messages: any[] = threadData.messages || [];
+          if (messages.length === 0) continue;
+
+          // Check if user replied (SENT label on any message in thread)
+          const userReplied = messages.some((m: any) => (m.labelIds || []).includes("SENT"));
+
+          // Use the most recent non-sent message as representative
+          const firstMsg = messages.find((m: any) => !(m.labelIds || []).includes("SENT")) || messages[0];
+          const headers = (firstMsg.payload?.headers || []).reduce((acc: any, h: any) => ({ ...acc, [h.name]: h.value }), {});
+          const subject = headers["Subject"] || "(no subject)";
+          const sender = headers["From"] || "unknown";
+          const dateStr = headers["Date"] || "";
+          const isImportant = (firstMsg.labelIds || []).includes("IMPORTANT");
+
+          // Concatenate all messages in thread (for richer context), clean each
+          const combinedBody = messages
+            .map((m: any) => cleanEmailBody(decodeBody(m.payload) || ""))
+            .filter(b => b.length > 0)
+            .join("\n\n---\n\n")
+            .substring(0, 3000); // cap at 3000 chars
+
+          // ── LAYER 1: Spam/Ad heuristic (free) ──
+          if (isSpamOrAd(subject, sender, combinedBody)) {
+            threadsSkippedSpam++;
+            asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_SPAM", { thread_id: threadId, subject });
+            continue;
+          }
+
+          // ── LAYER 2: Trivial content guard (free) ──
+          if (!isWorthProcessing(combinedBody)) {
+            threadsSkippedTrivial++;
+            asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_TRIVIAL", { thread_id: threadId, subject });
+            continue;
+          }
+
+          // ── LAYER 3: Semantic dedup check ──
+          // GUARDRAILS: never skip if important, or if we'd skip 3+ in a row
+          let shouldSkipDedup = false;
+          if (!isImportant && consecutiveSkips < MAX_CONSECUTIVE_SKIPS) {
+            try {
+              const dedupPayload = `${subject} ${combinedBody.substring(0, 300)}`;
+              const embedRes = await supabaseAdmin.functions.invoke("embed", {
+                body: { text: dedupPayload }
+              });
+              if (embedRes.data?.embedding) {
+                const { data: similar } = await supabaseAdmin.rpc("match_emails", {
+                  query_embedding: embedRes.data.embedding,
+                  match_threshold: DEDUP_THRESHOLD,
+                  match_count: 1
+                });
+                if (similar && similar.length > 0) {
+                  // Only skip if same sender too
+                  const existingEmail = await supabaseAdmin.from("emails")
+                    .select("id, sender_id").eq("id", similar[0].id).single();
+                  const senderMatch = existingEmail?.data?.sender_id; // rough check
+                  if (senderMatch) {
+                    shouldSkipDedup = true;
+                  }
+                }
+              }
+            } catch (e: any) {
+              // Dedup errors are non-fatal — proceed to ingestion
+              console.warn("[DEDUP] Error during dedup check:", e.message);
+            }
+          }
+
+          if (shouldSkipDedup) {
+            threadsSkippedDedup++;
+            consecutiveSkips++;
+            asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_DEDUP", { thread_id: threadId, subject });
+            continue;
+          }
+          consecutiveSkips = 0; // reset on successful pass-through
+
+          // ── INGEST TO GRAPH ──
+          await graphStore.ingestEmailToGraph({
+            message_id: firstMsg.id,
+            subject,
+            body: combinedBody,
+            sender,
+            thread_id: threadId,
+            received_at: dateStr ? new Date(dateStr).toISOString() : new Date().toISOString(),
+          }, user.id);
+
+          threadsProcessed++;
+
+          // Update progress every 5 threads
+          if (isOnboarding && threadsProcessed % 5 === 0) {
+            await supabaseAdmin.from("user_settings").update({
+              onboarding_progress: {
+                threads_total: threadIds.length,
+                threads_done: threadsProcessed,
+                eta_seconds: Math.ceil(((threadIds.length - threadsProcessed) * RATE_LIMIT_SECS_PER_THREAD * SAFETY_FACTOR)),
+                queue_position: 0,
+              }
+            }).eq("user_id", user.id);
+          }
+
+        } catch (err: any) {
+          console.error(`[GraphRAG] Thread ${threadId} ingestion failed:`, err.message);
+          // Non-fatal — continue to next thread
+        }
+      }
+
+      // ── Post-batch: build communities + finalise ──
+      try {
+        await graphStore.buildCommunities();
+      } catch (e: any) {
+        console.error("[GraphRAG] buildCommunities failed:", e.message);
+      }
+
+      const finalUpdate: any = {
         last_synced_at: new Date().toISOString(),
-        sync_in_progress: false,
-        sync_lock_at: null,
-        last_sync_error: null
-      }).eq("id", settings.id);
-      
-      // Trigger Background Catchup
-      await supabaseAdmin.from("sync_queue").insert({ user_id: user.id, dedup_id: `catchup_${user.id}_${Date.now()}` });
-    } else if (isPageDone && !nextPageToken && safeRawRemaining === 0) {
-      await supabaseAdmin.from("user_settings").update({
-        last_synced_at: new Date().toISOString(),
-        sync_page_token: null,
         sync_in_progress: false,
         sync_lock_at: null,
         last_sync_error: null,
-        recent_actions: []
-      }).eq("id", settings.id);
-    } else {
-      // More work in current page - release lock for next attempt (Worker or User)
-      await supabaseAdmin.from("user_settings").update({
-        sync_in_progress: false,
-        sync_lock_at: null,
-        last_synced_at: new Date().toISOString(),
-        last_sync_error: null
-      }).eq("id", settings.id);
-      
-      // If we still have emails in this page, trigger background worker to pick up the slack
-      if (remainingCount > 0) {
-        await supabaseAdmin.from("sync_queue").upsert({ 
-          user_id: user.id, 
-          dedup_id: `burst_${user.id}_${storedPageToken || 'init'}`
-        });
+      };
+      if (isOnboarding) {
+        finalUpdate.onboarding_status = "complete";
+        finalUpdate.onboarding_progress = {
+          threads_total: threadIds.length,
+          threads_done: threadsProcessed,
+          eta_seconds: 0,
+          queue_position: 0,
+        };
       }
-    }
+      await supabaseAdmin.from("user_settings").update(finalUpdate).eq("user_id", user.id);
 
-    asyncLog(supabaseAdmin, user.id, "V21_MODULAR_COMPLETE", { tasks: finalTasks.length, processed: batchIds.length, remaining: remainingCount });
+      asyncLog(supabaseAdmin, user.id, "GRAPHRAG_SYNC_COMPLETE", {
+        threads_fetched: threadIds.length,
+        threads_processed: threadsProcessed,
+        threads_skipped_spam: threadsSkippedSpam,
+        threads_skipped_trivial: threadsSkippedTrivial,
+        threads_skipped_dedup: threadsSkippedDedup,
+        pass_used: passUsed,
+      });
+    };
+
+    // Fire the pipeline — non-blocking so we can return immediately
+    fireAndForget(graphPipeline());
+
+    // Estimate for frontend progress screen
+    const estimatedSeconds = Math.ceil(
+      (threadIds.length * RATE_LIMIT_SECS_PER_THREAD * SAFETY_FACTOR) +
+      (queuePos * SECS_PER_QUEUED_USER)
+    );
 
     return new Response(JSON.stringify({
       success: true,
-      processed_ids: batchIds,
-      tasks_extracted: finalTasks.length,
-      remaining: isPageDone && !nextPageToken ? 0 : 1
+      threads_fetched: threadIds.length,
+      estimated_total_seconds: estimatedSeconds,
+      queue_position: queuePos,
+      pass_used: passUsed,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err: any) {
     console.error("Sync Error:", err.message);
-    // ── DEADLOCK GUARD: Always release both the lock flag AND the timestamp on error ──
-    // Without this, a crashed sync would permanently block all future syncs.
     try {
       if (settings?.id) {
         await supabaseAdmin.from("user_settings").update({
@@ -548,6 +535,6 @@ Deno.serve(async (req: Request) => {
         }).eq("id", settings.id);
       }
     } catch (_) { /* best-effort */ }
-    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: getCorsHeaders(req) });
   }
 });
