@@ -178,6 +178,13 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({ labelIds: ["INBOX"], topicName: `projects/${Deno.env.get("GOOGLE_CLOUD_PROJECT_ID")}/topics/tasker-gmail-push` })
         });
       } catch (e: any) { console.warn("Gmail watch error:", e.message); }
+    } else if (reqBody.providerToken) {
+      // Returning user — refresh stored OAuth tokens with freshly issued ones from the sign-in
+      await supabaseAdmin.from("user_settings").update({
+        gmail_token: { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || settings.gmail_token?.refresh_token || null }
+      }).eq("user_id", user.id);
+      settings.gmail_token = { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || settings.gmail_token?.refresh_token || null };
+      asyncLog(supabaseAdmin, user.id, "GMAIL_TOKEN_REFRESHED", { source: "providerToken_in_request" });
     }
 
     // ── Update sync_flags if passed (wizard completion) ──
@@ -191,12 +198,20 @@ Deno.serve(async (req: Request) => {
 
     // ── bootstrap_only: save settings + enqueue job, return immediately ──
     if (reqBody.bootstrap_only) {
-      // Enqueue onboarding job (priority = 'onboarding')
-      await supabaseAdmin.from("sync_queue").insert({
+      // Upsert onboarding job — if it already exists, reset it back to 'pending'
+      // so re-tries from the wizard always work (dedup_id has a UNIQUE constraint)
+      await supabaseAdmin.from("sync_queue").upsert({
         user_id: user.id,
         dedup_id: `onboarding_${user.id}`,
-        priority: "onboarding"
-      }).select();
+        priority: "onboarding",
+        status: "pending",
+        retry_count: 0,
+        next_retry_at: null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "dedup_id" });
+
+      // Mark onboarding as queued in user_settings
+      await supabaseAdmin.from("user_settings").update({ onboarding_status: "queued" }).eq("user_id", user.id);
 
       // Compute queue position for estimate
       const { data: queuePos } = await supabaseAdmin.rpc("get_onboarding_queue_position", { p_user_id: user.id });

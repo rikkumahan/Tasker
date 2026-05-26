@@ -430,6 +430,13 @@ export default function App() {
     const DEFAULT_PROFILE = "A busy professional seeking to organize their schedule, extract actionable tasks from communications, and manage deadlines efficiently.";
     if (!settings || !settings.user_profile || settings.user_profile === DEFAULT_PROFILE) {
       console.log('[INFO] New user detected. Showing setup wizard...');
+      // Store any available OAuth tokens so the wizard's Start Syncing can pass them
+      if (sess?.provider_token && !providerTokenRef.current?.providerToken) {
+        providerTokenRef.current = {
+          providerToken: sess.provider_token,
+          providerRefreshToken: sess.provider_refresh_token,
+        };
+      }
       setWizardStep(2);
     } else if (settings.last_synced_at) {
       console.log(`[INFO] Last sync was ${Math.round((Date.now() - new Date(settings.last_synced_at).getTime()) / 60000)} mins ago.`);
