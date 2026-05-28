@@ -9,8 +9,10 @@ export function getCorsHeaders(req?: Request): Record<string, string> {
   const envOrigin = Deno.env.get("ALLOWED_ORIGIN");
   const requestOrigin = req?.headers.get("origin") || "";
   let allowOrigin = envOrigin || "https://tasker-kappa-flame.vercel.app";
-  if (requestOrigin && (ALLOWED_ORIGINS.includes(requestOrigin) || requestOrigin === envOrigin)) {
-    allowOrigin = requestOrigin;
+  if (requestOrigin) {
+    if (ALLOWED_ORIGINS.includes(requestOrigin) || requestOrigin === envOrigin || requestOrigin.startsWith("http://localhost:") || requestOrigin.startsWith("http://127.0.0.1:")) {
+      allowOrigin = requestOrigin;
+    }
   }
   return {
     "Access-Control-Allow-Origin": allowOrigin,

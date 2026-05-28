@@ -23,8 +23,8 @@ Deno.serve(async (req: Request) => {
   // Draining the queue is completely safe to trigger externally since it requires zero parameters and only executes authenticated queue rows natively.
 
   const supabaseAdmin = createClient(
-    Deno.env.get("SUPABASE_URL") ?? "",
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    (Deno.env.get("SUPABASE_URL") ?? "").trim(),
+    ((Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? "").trim()
   );
 
   // ── Fail-safe: reset any jobs stuck in 'processing' >5 mins ──
@@ -43,8 +43,8 @@ Deno.serve(async (req: Request) => {
 
     try {
       // Delegate to sync function via direct fetch to avoid supabase-js header quirks
-      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const serviceKey = (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? "").trim();
+      const supabaseUrl = (Deno.env.get("SUPABASE_URL") ?? "").trim();
       const syncRes = await fetch(`${supabaseUrl}/functions/v1/sync`, {
         method: "POST",
         headers: {
@@ -57,7 +57,8 @@ Deno.serve(async (req: Request) => {
 
       if (!syncRes.ok) {
         const errorBody = await syncRes.text();
-        throw new Error(`Sync returned ${syncRes.status}: ${errorBody}`);
+        const debugKey = serviceKey.substring(0, 10) + '...' + serviceKey.substring(serviceKey.length - 10);
+        throw new Error(`Sync returned ${syncRes.status}: ${errorBody} (Key: ${debugKey}, len: ${serviceKey.length})`);
       }
 
       const data = await syncRes.json();

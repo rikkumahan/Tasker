@@ -25,6 +25,15 @@ export const decodeBody = (payload: any): string => {
 
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export async function processInBatches<T, R>(items: T[], batchSize: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
+}
 // ── TEMPORAL UTILITIES ──
 export function getSeason(monthIndex: number): string {
   // Explicit mapping: Dec(11)/Jan(0)/Feb(1)=Winter, Mar-May=Spring, Jun-Aug=Summer, Sep-Nov=Fall

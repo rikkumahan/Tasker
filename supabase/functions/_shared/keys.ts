@@ -6,14 +6,18 @@
 let keyIndex = 0;
 
 export const getNextKey = (): string => {
-  const keys = [
+  const rawKeys = [
     Deno.env.get("GROQ_API_KEY") || "",
-    Deno.env.get("GROQ_API_KEY_B") || Deno.env.get("GROQ_API_KEY") || "",
-    Deno.env.get("GROQ_API_KEY_C") || Deno.env.get("GROQ_API_KEY") || "",
-    Deno.env.get("GROQ_API_KEY_D") || Deno.env.get("GROQ_API_KEY") || "",
+    Deno.env.get("GROQ_API_KEY_B") || "",
+    Deno.env.get("GROQ_API_KEY_C") || "",
+    Deno.env.get("GROQ_API_KEY_D") || "",
   ];
+  // Filter out empty strings and deduplicate
+  const keys = [...new Set(rawKeys.filter(k => k.trim() !== ""))];
+  if (keys.length === 0) return "";
+  
   const key = keys[keyIndex % keys.length];
-  keyIndex++;
+  keyIndex = (keyIndex + 1) % keys.length;
   return key;
 };
 

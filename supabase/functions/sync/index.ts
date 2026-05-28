@@ -1,15 +1,15 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders } from "../_shared/cors.ts";
-import { decodeBody, sleep, cleanEmailBody, isSpamOrAd, isWorthProcessing } from "../_shared/utils.ts";
+import { decodeBody, sleep, cleanEmailBody, isSpamOrAd, isWorthProcessing, processInBatches } from "../_shared/utils.ts";
 import { refreshGmailToken } from "../_shared/oauth.ts";
-import { GraphRAGStore } from "../_shared/graph.ts";
+import { GraphRAGStore, getEmbedding } from "../_shared/graph.ts";
 
 // ─────────────────────────────────────────────
 // Constants — Groq free-tier aware
 // ─────────────────────────────────────────────
-const CALLS_PER_THREAD = 2;        // 1 LLM extraction + 1 embedding
+const CALLS_PER_THREAD = 1;        // 1 Groq LLM extraction per thread (embedding is local via gte-small, not a Groq call)
 const GROQ_RPM_AGGREGATE = 120;    // 4 keys × 30 RPM
-const RATE_LIMIT_SECS_PER_THREAD = 60 / (GROQ_RPM_AGGREGATE / CALLS_PER_THREAD); // ~1s
+const RATE_LIMIT_SECS_PER_THREAD = 60 / (GROQ_RPM_AGGREGATE / CALLS_PER_THREAD); // ~0.5s
 const SAFETY_FACTOR = 1.3;
 const SECS_PER_QUEUED_USER = 60;
 
@@ -21,13 +21,16 @@ const MAX_CONSECUTIVE_SKIPS = 3;   // guardrail: never skip more than 3 in a row
 // Supabase Edge Runtime fire-and-forget helper
 // ─────────────────────────────────────────────
 function fireAndForget(promise: Promise<any>) {
+  // Always attach .catch() first — prevents unhandled rejection in all environments
+  // (including local/test where EdgeRuntime is undefined)
+  const safePromise = promise.catch((err: any) => console.error("[BG Task Error]", err));
   try {
     // @ts-ignore: EdgeRuntime is Supabase-specific
     if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
-      EdgeRuntime.waitUntil(promise);
+      EdgeRuntime.waitUntil(safePromise);
     }
-  } catch {
-    promise.catch((err: any) => console.error("[BG Task Error]", err));
+  } catch (e: any) {
+    console.warn("[fireAndForget] EdgeRuntime.waitUntil unavailable:", e.message);
   }
 }
 
@@ -48,14 +51,22 @@ function buildGmailQuery(syncFlags: any, lastSyncedAt: string | null): string {
 
   // Source filters from wizard selection
   const sources: string[] = [];
-  const labels: string[] = syncFlags?.gmail_labels || ["IMPORTANT", "INBOX"];
+  // Guard against empty array — `[] || default` does NOT trigger because [] is truthy.
+  // Explicitly check length so an empty selection falls back to safe defaults.
+  const rawLabels: string[] = syncFlags?.gmail_labels;
+  const labels: string[] = (Array.isArray(rawLabels) && rawLabels.length > 0)
+    ? rawLabels
+    : ["IMPORTANT", "INBOX"];
   if (labels.includes("IMPORTANT")) sources.push("is:important");
   if (labels.includes("INBOX"))     sources.push("in:inbox");
   if (labels.includes("SENT"))      sources.push("in:sent");
   for (const id of (syncFlags?.custom_label_ids || [])) {
     sources.push(`label:${id}`);
   }
-  if (sources.length > 0) parts.push(`(${sources.join(" OR ")})`);
+  // Defense-in-depth: if sources is still empty after processing all flags,
+  // force-scope to INBOX to prevent an unbounded full-archive Gmail query.
+  if (sources.length === 0) sources.push("in:inbox");
+  parts.push(`(${sources.join(" OR ")})`);
 
   // Tracking preference keyword enrichment
   const prefs: string[] = syncFlags?.tracking_preferences || [];
@@ -97,7 +108,7 @@ Deno.serve(async (req: Request) => {
 
     supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+      (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? ""
     );
 
     let user: any = null;
@@ -106,7 +117,8 @@ Deno.serve(async (req: Request) => {
     let tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
 
     // Service-role call from background_worker
-    if (tokenStr === (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim() && reqBody.user_id) {
+    const serviceKey = (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? "").trim();
+    if (tokenStr === serviceKey && reqBody.user_id) {
       user = { id: reqBody.user_id };
     } else {
       try {
@@ -207,7 +219,6 @@ Deno.serve(async (req: Request) => {
         status: "pending",
         retry_count: 0,
         next_retry_at: null,
-        updated_at: new Date().toISOString(),
       }, { onConflict: "dedup_id" });
 
       // Mark onboarding as queued in user_settings
@@ -215,6 +226,12 @@ Deno.serve(async (req: Request) => {
 
       // Compute queue position for estimate
       const { data: queuePos } = await supabaseAdmin.rpc("get_onboarding_queue_position", { p_user_id: user.id });
+
+      // ── REACTIVE TRIGGER: Wake background_worker immediately ──
+      // Fire-and-forget to start draining the queue immediately so onboarding isn't stuck
+      const trigger = supabaseAdmin.functions.invoke("background_worker", { body: {} })
+        .catch((e: any) => console.warn("[Sync] Worker trigger failed:", e.message));
+      fireAndForget(trigger);
 
       return new Response(JSON.stringify({
         success: true,
@@ -249,7 +266,7 @@ Deno.serve(async (req: Request) => {
     if (isStaleLock) {
       const { data } = await supabaseAdmin.from("user_settings")
         .update({ sync_in_progress: true, sync_lock_at: new Date().toISOString() })
-        .eq("id", settings.id).select("id");
+        .eq("id", settings.id).eq("sync_lock_at", rawLockAt).select("id");
       lockAcquired = data || [];
       asyncLog(supabaseAdmin, user.id, "SYNC_LOCK_BROKEN", { lock_age_ms: lockAge });
     } else {
@@ -277,63 +294,60 @@ Deno.serve(async (req: Request) => {
     let threadIds: string[] = [];
     let passUsed = 1;
 
-    // Pass 1: Full query (category filter + source + keywords + time)
     let tokenRefreshedOnList = false;
-    const fetchThreadList = async (query: string): Promise<any[]> => {
-      let res = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${THREAD_BATCH}&q=${encodeURIComponent(query)}`,
-        { headers: { Authorization: `Bearer ${gmailToken}` } }
-      );
-      if (res.status === 401 && !tokenRefreshedOnList && settings.gmail_token?.refresh_token) {
-        const fresh = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
-        if (fresh) { gmailToken = fresh; tokenRefreshedOnList = true; }
-        res = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${THREAD_BATCH}&q=${encodeURIComponent(query)}`,
+    const fetchThreadList = async (query: string, maxThreads: number = 5): Promise<any[]> => {
+      let pageToken = settings.sync_page_token || "";
+      let fetched: any[] = [];
+      
+      while (fetched.length < maxThreads) {
+        const ptParam = pageToken ? `&pageToken=${pageToken}` : "";
+        let res = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${THREAD_BATCH}&q=${encodeURIComponent(query)}${ptParam}`,
           { headers: { Authorization: `Bearer ${gmailToken}` } }
         );
+        if (res.status === 401 && !tokenRefreshedOnList && settings.gmail_token?.refresh_token) {
+          const fresh = await refreshGmailToken(user.id, settings.gmail_token.refresh_token, supabaseAdmin);
+          if (fresh) { gmailToken = fresh; tokenRefreshedOnList = true; }
+          res = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${THREAD_BATCH}&q=${encodeURIComponent(query)}${ptParam}`,
+            { headers: { Authorization: `Bearer ${gmailToken}` } }
+          );
+        }
+        if (!res.ok) break;
+        const d = await res.json();
+        const batch = d.threads || [];
+        fetched.push(...batch);
+        
+        if (d.nextPageToken) {
+          pageToken = d.nextPageToken;
+        } else {
+          pageToken = "";
+          break; // no more pages
+        }
       }
-      if (!res.ok) return [];
-      const d = await res.json();
-      return d.threads || [];
+      
+      // Save the page token for the next sync run
+      if (pageToken !== settings.sync_page_token) {
+        await supabaseAdmin.from("user_settings").update({ sync_page_token: pageToken }).eq("user_id", user.id);
+        settings.sync_page_token = pageToken;
+      }
+      
+      return fetched;
     };
 
+    // Pass 1: Full query (category filter + source + keywords + time)
     let threads = await fetchThreadList(fullQuery);
     asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P1", { count: threads.length, query: fullQuery });
 
-    // Pass 2: Relax keyword terms (keep source + category filter + time)
+    // Pass 2: Relax keyword terms (keep source + category filter + time limits exactly as configured)
     if (threads.length < 5) {
       passUsed = 2;
       const relaxedQuery = buildGmailQuery({ ...syncFlags, tracking_preferences: [] }, settings.last_synced_at);
       threads = await fetchThreadList(relaxedQuery);
       asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P2", { count: threads.length });
     }
-
-    // Pass 3: Bare — no query filter, just time window
-    if (threads.length < 5) {
-      passUsed = 3;
-      const days = syncFlags?.lookback_days || 30;
-      const after = Math.floor((Date.now() - days * 24 * 3600 * 1000) / 1000);
-      threads = await fetchThreadList(`after:${after}`);
-      asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P3", { count: threads.length });
-    }
-
-    // Fallback to messages if still empty
-    if (threads.length === 0) {
-      passUsed = 4;
-      const days = syncFlags?.lookback_days || 30;
-      const after = Math.floor((Date.now() - days * 24 * 3600 * 1000) / 1000);
-      let msgRes = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${THREAD_BATCH}&q=after:${after}`,
-        { headers: { Authorization: `Bearer ${gmailToken}` } }
-      );
-      if (msgRes.ok) {
-        const msgData = await msgRes.json();
-        const msgs = msgData.messages || [];
-        // Treat each message as its own "thread"
-        threads = msgs.map((m: any) => ({ id: m.threadId || m.id }));
-      }
-      asyncLog(supabaseAdmin, user.id, "THREAD_FETCH_P4_FALLBACK", { count: threads.length });
-    }
+    
+    // (Pass 3 & 4 removed to respect user lookback_days privacy constraint)
 
     // Sort: threads where user replied (SENT label) go first
     // We'll check label membership after fetching full thread data below
@@ -363,8 +377,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const graphPipeline = async () => {
-      for (let i = 0; i < threadIds.length; i++) {
-        const threadId = threadIds[i];
+      await processInBatches(threadIds, 3, async (threadId) => {
         try {
           // Fetch full thread
           let threadRes = await fetch(
@@ -381,11 +394,11 @@ Deno.serve(async (req: Request) => {
               { headers: { Authorization: `Bearer ${gmailToken}` } }
             );
           }
-          if (!threadRes.ok) continue;
+          if (!threadRes.ok) return;
 
           const threadData = await threadRes.json();
           const messages: any[] = threadData.messages || [];
-          if (messages.length === 0) continue;
+          if (messages.length === 0) return;
 
           // Check if user replied (SENT label on any message in thread)
           const userReplied = messages.some((m: any) => (m.labelIds || []).includes("SENT"));
@@ -398,63 +411,64 @@ Deno.serve(async (req: Request) => {
           const dateStr = headers["Date"] || "";
           const isImportant = (firstMsg.labelIds || []).includes("IMPORTANT");
 
-          // Concatenate all messages in thread (for richer context), clean each
-          const combinedBody = messages
+          // Keep first 5 (context) and last 5 (latest updates)
+          let selectedMessages = messages;
+          let omittedText = "";
+          if (messages.length > 10) {
+            const first5 = messages.slice(0, 5);
+            const last5 = messages.slice(-5);
+            selectedMessages = [...first5, ...last5];
+            omittedText = `\n\n... [${messages.length - 10} emails omitted for brevity] ...\n\n`;
+          }
+
+          // Concatenate selected messages, clean each
+          const cleanedBodies = selectedMessages
             .map((m: any) => cleanEmailBody(decodeBody(m.payload) || ""))
-            .filter(b => b.length > 0)
-            .join("\n\n---\n\n")
-            .substring(0, 3000); // cap at 3000 chars
+            .filter(b => b.length > 0);
+
+          let combinedBody = "";
+          if (messages.length > 10 && cleanedBodies.length === 10) {
+            combinedBody = cleanedBodies.slice(0, 5).join("\n\n---\n\n") + omittedText + cleanedBodies.slice(5).join("\n\n---\n\n");
+          } else {
+            combinedBody = cleanedBodies.join("\n\n---\n\n");
+          }
+
+          combinedBody = combinedBody.substring(0, 10000); // cap increased to 10,000 chars
 
           // ── LAYER 1: Spam/Ad heuristic (free) ──
           if (isSpamOrAd(subject, sender, combinedBody)) {
             threadsSkippedSpam++;
             asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_SPAM", { thread_id: threadId, subject });
-            continue;
+            return;
           }
 
           // ── LAYER 2: Trivial content guard (free) ──
           if (!isWorthProcessing(combinedBody)) {
             threadsSkippedTrivial++;
             asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_TRIVIAL", { thread_id: threadId, subject });
-            continue;
+            return;
           }
 
-          // ── LAYER 3: Semantic dedup check ──
-          // GUARDRAILS: never skip if important, or if we'd skip 3+ in a row
-          let shouldSkipDedup = false;
-          if (!isImportant && consecutiveSkips < MAX_CONSECUTIVE_SKIPS) {
-            try {
-              const dedupPayload = `${subject} ${combinedBody.substring(0, 300)}`;
-              const embedRes = await supabaseAdmin.functions.invoke("embed", {
-                body: { text: dedupPayload }
-              });
-              if (embedRes.data?.embedding) {
-                const { data: similar } = await supabaseAdmin.rpc("match_emails", {
-                  query_embedding: embedRes.data.embedding,
-                  match_threshold: DEDUP_THRESHOLD,
-                  match_count: 1
-                });
-                if (similar && similar.length > 0) {
-                  // Only skip if same sender too
-                  const existingEmail = await supabaseAdmin.from("emails")
-                    .select("id, sender_id").eq("id", similar[0].id).single();
-                  const senderMatch = existingEmail?.data?.sender_id; // rough check
-                  if (senderMatch) {
-                    shouldSkipDedup = true;
-                  }
-                }
-              }
-            } catch (e: any) {
-              // Dedup errors are non-fatal — proceed to ingestion
-              console.warn("[DEDUP] Error during dedup check:", e.message);
+          // ── LAYER 3: Message ID dedup check ──
+          // Gmail message IDs are globally unique — a simple existence check is
+          // faster, cheaper, and more correct than the previous vector similarity
+          // approach which ran an AI embedding model + 3 DB queries per email.
+          try {
+            const { data: existingMsg } = await supabaseAdmin
+              .from("emails")
+              .select("id")
+              .eq("message_id", firstMsg.id)
+              .maybeSingle();
+
+            if (existingMsg) {
+              threadsSkippedDedup++;
+              consecutiveSkips++;
+              asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_DEDUP", { thread_id: threadId, subject });
+              return;
             }
-          }
-
-          if (shouldSkipDedup) {
-            threadsSkippedDedup++;
-            consecutiveSkips++;
-            asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_DEDUP", { thread_id: threadId, subject });
-            continue;
+          } catch (e: any) {
+            // Dedup errors are non-fatal — proceed to ingestion
+            console.warn("[DEDUP] Error during message_id check:", e.message);
           }
           consecutiveSkips = 0; // reset on successful pass-through
 
@@ -486,14 +500,17 @@ Deno.serve(async (req: Request) => {
           console.error(`[GraphRAG] Thread ${threadId} ingestion failed:`, err.message);
           // Non-fatal — continue to next thread
         }
-      }
+      });
 
       // ── Post-batch: build communities + finalise ──
-      try {
-        await graphStore.buildCommunities();
-      } catch (e: any) {
-        console.error("[GraphRAG] buildCommunities failed:", e.message);
-      }
+      // DISABLED: buildCommunities() runs a full graph teardown + Louvain clustering +
+      // N Groq LLM calls inline, causing Edge Function timeouts on every sync.
+      // TODO: Move to a scheduled pg_cron job (e.g. every 1 hour).
+      // try {
+      //   await graphStore.buildCommunities();
+      // } catch (e: any) {
+      //   console.error("[GraphRAG] buildCommunities failed:", e.message);
+      // }
 
       const finalUpdate: any = {
         last_synced_at: new Date().toISOString(),
@@ -501,6 +518,10 @@ Deno.serve(async (req: Request) => {
         sync_lock_at: null,
         last_sync_error: null,
       };
+      
+      // ALWAYS mark onboarding as complete after the first batch is processed.
+      // Remaining historical pages will continue syncing in the background via the background_worker,
+      // and new tasks will magically pop into the user's dashboard via Realtime.
       if (isOnboarding) {
         finalUpdate.onboarding_status = "complete";
         finalUpdate.onboarding_progress = {
@@ -537,6 +558,7 @@ Deno.serve(async (req: Request) => {
       estimated_total_seconds: estimatedSeconds,
       queue_position: queuePos,
       pass_used: passUsed,
+      remaining: settings.sync_page_token ? 1 : 0,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err: any) {
