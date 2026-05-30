@@ -12,10 +12,10 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
   const [threadsCache, setThreadsCache] = useState({});
   const threadsCacheRef                 = useRef({});
   const lastFetchedRef                  = useRef({});
-  const threads = threadsCache[activeFilter] || [];
   const [loading, setLoading]           = useState(true);
   const [activeView, setActiveView]     = useState('tasks');
   const [activeFilter, setActiveFilter] = useState('all');
+  const threads = threadsCache[activeFilter] || [];
   const [selectedThread, setSelectedThread] = useState(null);
   const [nextOffset, setNextOffset]     = useState(0);
   const [userSettings, setUserSettings] = useState(null);
@@ -59,7 +59,7 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
       // Optimistically pre-populate other tabs if we just fetched 'all'
       // This guarantees zero loading screens when clicking tabs for the first time!
       if (filter === 'all' && offset === 0) {
-        if (!newCache.priority) newCache.priority = newList.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH');
+        if (!newCache.important) newCache.important = newList.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH');
         if (!newCache.action)   newCache.action   = newList.filter(t => ['reply','approve','review','join'].includes(t.action_type));
         if (!newCache.unread)   newCache.unread   = newList.filter(t => !t.is_read);
       }
