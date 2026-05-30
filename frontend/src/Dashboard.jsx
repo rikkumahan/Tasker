@@ -51,11 +51,20 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
       const currentList = threadsCacheRef.current[filter] || [];
       const newList = append ? [...currentList, ...incoming] : incoming;
       
-      threadsCacheRef.current = {
+      const newCache = {
         ...threadsCacheRef.current,
         [filter]: newList
       };
+
+      // Optimistically pre-populate other tabs if we just fetched 'all'
+      // This guarantees zero loading screens when clicking tabs for the first time!
+      if (filter === 'all' && offset === 0) {
+        if (!newCache.priority) newCache.priority = newList.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH');
+        if (!newCache.action)   newCache.action   = newList.filter(t => ['reply','approve','review','join'].includes(t.action_type));
+        if (!newCache.unread)   newCache.unread   = newList.filter(t => !t.is_read);
+      }
       
+      threadsCacheRef.current = newCache;
       lastFetchedRef.current[filter] = Date.now();
       
       setThreadsCache(threadsCacheRef.current);
