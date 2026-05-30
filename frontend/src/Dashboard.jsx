@@ -11,6 +11,7 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 export default function Dashboard({ session, supabase, wizardStep, onSignOut }) {
   const [threadsCache, setThreadsCache] = useState({});
   const threadsCacheRef                 = useRef({});
+  const lastFetchedRef                  = useRef({});
   const threads = threadsCache[activeFilter] || [];
   const [loading, setLoading]           = useState(true);
   const [activeView, setActiveView]     = useState('tasks');
@@ -24,9 +25,16 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
 
   const fetchThreads = async (filter = 'all', offset = 0, append = false) => {
     if (!session) return;
-    if (fetchingRef.current && offset === 0) return;
-    fetchingRef.current = true;
+    const now = Date.now();
     const hasCache = !!threadsCacheRef.current[filter]?.length;
+    const lastFetched = lastFetchedRef.current[filter] || 0;
+
+    // Stale-While-Revalidate: skip fetch if we already have cache and it's less than 15s old
+    if (offset === 0 && !append && hasCache && (now - lastFetched < 15000)) {
+      return;
+    }
+
+    fetchingRef.current = true;
     if (offset === 0 && !append && !hasCache) setLoading(true);
 
     try {
@@ -47,6 +55,8 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
         ...threadsCacheRef.current,
         [filter]: newList
       };
+      
+      lastFetchedRef.current[filter] = Date.now();
       
       setThreadsCache(threadsCacheRef.current);
       setNextOffset(data?.nextOffset ?? 0);
