@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tasker — Pitch Deck 2026</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700;1,900&family=IBM+Plex+Mono:wght@300;400;500&family=Crimson+Pro:ital,wght@0,300;0,400;1,300;1,400&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --bg: #08080a; --surface: #111114; --border: #1e1e22; --border-bright: #2e2e34;
+            --cream: #ede4d3; --cream-dim: #a89880; --red: #b83228; --gold: #c4891a;
+            --gold-dim: #7a5510; --blue: #2471a3; --green: #1e8449;
+            --text: #cec9be; --muted: #5a5650;
+            --font-display: 'Playfair Display', Georgia, serif;
+            --font-mono: 'IBM Plex Mono', 'Courier New', monospace;
+            --font-body: 'Crimson Pro', Georgia, serif;
+        }
+        html, body { width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); -webkit-font-smoothing:antialiased; }
+        body::before { content:''; position:fixed; inset:0; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E"); pointer-events:none; z-index:9999; }
+        .progress-line { position:fixed; top:0; left:0; height:2px; background:var(--gold); transition:width .7s cubic-bezier(.4,0,.2,1); z-index:500; }
+        .brand { position:fixed; top:36px; left:48px; font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:.25em; text-transform:uppercase; z-index:200; }
+        .slide-counter { position:fixed; top:36px; right:48px; font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:.12em; z-index:200; }
+        .kbd-hint { position:fixed; bottom:36px; right:48px; font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:.12em; z-index:200; }
+        .nav { position:fixed; bottom:36px; left:50%; transform:translateX(-50%); display:flex; gap:8px; align-items:center; z-index:200; }
+        .nav-dot { height:2px; width:20px; background:var(--border-bright); cursor:pointer; transition:background .3s,width .3s; }
+        .nav-dot.active { background:var(--cream); width:36px; }
+        .deck { width:100%; height:100vh; position:relative; overflow:hidden; }
+        .slide { position:absolute; inset:0; display:flex; opacity:0; transform:translateY(24px); transition:opacity .55s ease,transform .55s ease; pointer-events:none; }
+        .slide.active { opacity:1; transform:translateY(0); pointer-events:all; }
+        .slide.exit { opacity:0; transform:translateY(-20px); transition:opacity .35s ease,transform .35s ease; }
+        .ghost-num { position:absolute; font-family:var(--font-display); font-size:clamp(180px,26vw,380px); font-weight:900; color:transparent; -webkit-text-stroke:1px rgba(237,228,211,.035); line-height:1; pointer-events:none; user-select:none; letter-spacing:-.06em; z-index:0; }
+        .slide-label { font-family:var(--font-mono); font-size:10px; letter-spacing:.22em; text-transform:uppercase; color:var(--muted); margin-bottom:20px; }
+        .slide-label span { color:var(--gold); }
+        .badge { display:inline-block; font-family:var(--font-mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase; padding:4px 10px; border:1px solid; margin-bottom:16px; }
+        .badge-gold  { color:var(--gold);  border-color:var(--gold-dim); background:rgba(196,137,26,.06); }
+        .badge-blue  { color:#5ba3d0;      border-color:#2471a3;         background:rgba(36,113,163,.06); }
+        .badge-gray  { color:var(--muted); border-color:var(--border-bright); }
+        .badge-green { color:#3aaa6e;      border-color:#1e8449;         background:rgba(30,132,73,.06); }
+
+        /* ══ S1: PROBLEM ══ */
+        #slide-1 .ghost-num { bottom:-80px; right:-10px; }
+        .s1-layout { display:grid; grid-template-columns:42% 58%; width:100%; position:relative; z-index:1; }
+        .s1-left { display:flex; flex-direction:column; justify-content:center; padding:88px 60px 88px 80px; border-right:1px solid var(--border); position:relative; }
+        .s1-left::after { content:''; position:absolute; top:88px; right:-1px; width:1px; height:48px; background:var(--gold); }
+        .s1-headline { font-family:var(--font-display); font-size:clamp(34px,4vw,58px); font-weight:900; font-style:italic; line-height:1.06; color:var(--cream); margin-bottom:28px; }
+        .s1-subline { font-family:var(--font-body); font-size:18px; font-weight:300; color:var(--cream-dim); line-height:1.65; max-width:320px; }
+        .s1-right { display:flex; flex-direction:column; justify-content:center; padding:88px 80px 88px 60px; }
+        .pain-card { padding:26px 0; border-bottom:1px solid var(--border); display:grid; grid-template-columns:20px 1fr; gap:20px; align-items:start; }
+        .pain-card:first-child { border-top:1px solid var(--border); }
+        .pain-marker { width:7px; height:7px; background:var(--red); margin-top:8px; flex-shrink:0; }
+        .pain-title { font-family:var(--font-display); font-size:21px; font-weight:700; color:var(--cream); margin-bottom:6px; line-height:1.2; }
+        .pain-body { font-family:var(--font-body); font-size:16px; color:var(--muted); line-height:1.55; font-weight:300; }
+        .pain-stat { font-family:var(--font-mono); font-size:10px; color:var(--gold); letter-spacing:.14em; text-transform:uppercase; margin-top:10px; }
+
+        /* ══ S2: SOLUTION ══ */
+        #slide-2 { flex-direction:column; }
+        #slide-2 .ghost-num { top:-60px; left:-20px; }
+        .s2-top { padding:48px 80px 32px; border-bottom:1px solid var(--border); position:relative; z-index:1; flex-shrink:0; display:grid; grid-template-columns:1fr 1fr; gap:60px; align-items:center; }
+        .s2-headline { font-family:var(--font-display); font-size:clamp(34px,4.4vw,60px); font-weight:900; font-style:italic; color:var(--cream); line-height:1.02; }
+        .s2-headline em { color:var(--gold); font-style:normal; }
+        .s2-meta { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+        .s2-pipeline { display:flex; align-items:center; justify-content:center; gap:0; }
+        .pipe-node { display:flex; flex-direction:column; align-items:center; gap:8px; }
+        .pipe-icon { width:48px; height:48px; border:1px solid var(--border-bright); background:rgba(237,228,211,.03); display:flex; align-items:center; justify-content:center; }
+        .pipe-label { font-family:var(--font-mono); font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); text-align:center; max-width:60px; line-height:1.3; }
+        .pipe-arrow { width:32px; height:1px; background:linear-gradient(90deg,var(--border-bright),var(--gold-dim)); flex-shrink:0; position:relative; margin-top:-20px; }
+        .pipe-arrow::after { content:''; position:absolute; right:-1px; top:-3px; width:7px; height:7px; border-right:1px solid var(--gold-dim); border-top:1px solid var(--gold-dim); transform:rotate(45deg); }
+        .s2-steps { flex:1; display:grid; grid-template-columns:repeat(4,1fr); position:relative; z-index:1; }
+        .journey-step { padding:28px 24px 36px; border-right:1px solid var(--border); display:flex; flex-direction:column; position:relative; transition:background .3s; }
+        .journey-step:last-child { border-right:none; }
+        .journey-step:hover { background:rgba(196,137,26,.025); }
+        .step-num { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:.2em; margin-bottom:32px; }
+        .step-glyph { font-size:18px; color:var(--gold-dim); margin-bottom:10px; font-family:var(--font-mono); line-height:1; }
+        .step-title { font-family:var(--font-display); font-size:20px; font-weight:700; color:var(--cream); line-height:1.15; margin-bottom:8px; }
+        .step-body { font-family:var(--font-body); font-size:13px; color:var(--muted); line-height:1.6; font-weight:300; margin-top:auto; }
+        .step-arrow { position:absolute; top:50%; right:-9px; transform:translateY(-50%); z-index:2; font-family:var(--font-mono); font-size:16px; color:var(--border-bright); }
+
+        /* ══ S3: P0 FEATURES ══ */
+        #slide-3 { flex-direction:column; }
+        #slide-3 .ghost-num { bottom:-80px; right:-10px; }
+        .s3-layout { display:grid; grid-template-rows:auto 1fr; height:100%; width:100%; position:relative; z-index:1; }
+        .s3-header { padding:52px 80px 32px; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .s3-headline { font-family:var(--font-display); font-size:clamp(30px,3.8vw,52px); font-weight:900; font-style:italic; color:var(--cream); line-height:1.05; }
+        .s3-headline em { color:var(--gold); font-style:normal; }
+        .s3-features { display:grid; grid-template-columns:1fr 1fr; }
+        .feature-col { padding:32px 52px; border-right:1px solid var(--border); display:flex; flex-direction:column; }
+        .feature-col:last-child { border-right:none; }
+        .feature-number { font-family:var(--font-display); font-size:72px; font-weight:900; color:transparent; -webkit-text-stroke:1px rgba(196,137,26,.12); line-height:1; margin-bottom:10px; }
+        .feature-name { font-family:var(--font-display); font-size:26px; font-weight:700; color:var(--cream); line-height:1.1; margin-bottom:10px; }
+        .feature-flow { display:flex; align-items:center; gap:0; margin-bottom:16px; }
+        .fnode { font-family:var(--font-mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase; padding:6px 10px; border:1px solid var(--border-bright); color:var(--cream-dim); white-space:nowrap; background:rgba(237,228,211,.02); }
+        .farrow { width:24px; height:1px; background:var(--gold-dim); flex-shrink:0; position:relative; }
+        .farrow::after { content:''; position:absolute; right:-1px; top:-3px; width:6px; height:6px; border-right:1px solid var(--gold-dim); border-top:1px solid var(--gold-dim); transform:rotate(45deg); }
+        .fnode-hl { border-color:var(--gold-dim); color:var(--gold); background:rgba(196,137,26,.06); }
+        .feature-problem { font-family:var(--font-body); font-size:14px; font-style:italic; color:var(--cream-dim); border-left:2px solid var(--border-bright); padding-left:12px; line-height:1.55; margin-bottom:12px; }
+        .feature-solution { font-family:var(--font-body); font-size:14px; color:var(--muted); line-height:1.65; font-weight:300; margin-bottom:16px; }
+        .feature-edge { font-family:var(--font-mono); font-size:10px; color:var(--gold); letter-spacing:.12em; text-transform:uppercase; margin-top:auto; }
+
+        /* ══ S4: ROADMAP ══ */
+        #slide-4 { flex-direction:column; }
+        #slide-4 .ghost-num { top:-60px; left:-20px; }
+        .s4-layout { display:grid; grid-template-rows:auto 1fr; height:100%; width:100%; position:relative; z-index:1; }
+        .s4-header { padding:52px 80px 32px; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .s4-headline { font-family:var(--font-display); font-size:clamp(30px,3.8vw,52px); font-weight:900; font-style:italic; color:var(--cream); line-height:1.05; }
+        .s4-body { display:flex; flex-direction:column; padding:32px 80px 0; overflow:hidden; }
+        .timeline-track { position:relative; margin-bottom:32px; height:48px; display:flex; align-items:center; }
+        .tl-line { position:absolute; left:24px; right:24px; height:1px; background:linear-gradient(90deg,var(--gold),var(--blue) 55%,var(--muted)); }
+        .tl-markers { display:flex; justify-content:space-between; width:100%; position:relative; z-index:2; }
+        .tl-marker { display:flex; flex-direction:column; align-items:center; gap:8px; }
+        .tl-dot { width:14px; height:14px; border:2px solid; border-radius:50%; background:var(--bg); }
+        .tl-dot-p0 { border-color:var(--gold); background:rgba(196,137,26,.2); }
+        .tl-dot-p1 { border-color:#5ba3d0; background:rgba(91,163,208,.15); }
+        .tl-dot-p2 { border-color:var(--muted); }
+        .tl-tag { font-family:var(--font-mono); font-size:9px; letter-spacing:.15em; text-transform:uppercase; }
+        .tl-tag-p0 { color:var(--gold); }
+        .tl-tag-p1 { color:#5ba3d0; }
+        .tl-tag-p2 { color:var(--muted); }
+        .roadmap-cols { display:grid; grid-template-columns:1fr 1fr 1fr; gap:0; flex:1; }
+        .roadmap-col { border-right:1px solid var(--border); padding:0 32px 0 0; }
+        .roadmap-col:last-child { border-right:none; padding-right:0; }
+        .roadmap-col:nth-child(2) { padding:0 32px; }
+        .roadmap-item { padding:14px 0; border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:flex-start; }
+        .roadmap-item:last-child { border-bottom:none; }
+        .rdot { width:6px; height:6px; border-radius:50%; margin-top:7px; flex-shrink:0; }
+        .rdot-p0 { background:var(--gold); }
+        .rdot-p1 { background:#5ba3d0; }
+        .rdot-p2 { background:var(--muted); }
+        .rname { font-family:var(--font-display); font-size:16px; font-weight:700; color:var(--cream); margin-bottom:4px; line-height:1.2; }
+        .rhelp { font-family:var(--font-body); font-size:12px; color:var(--muted); line-height:1.5; font-weight:300; }
+
+        /* ══ S5: COMPETITIVE DIFF ══ */
+        #slide-5 { flex-direction:column; }
+        #slide-5 .ghost-num { bottom:-80px; right:-10px; }
+        .s5-layout { display:grid; grid-template-rows:auto 1fr; height:100%; width:100%; position:relative; z-index:1; }
+        .s5-header { padding:52px 80px 32px; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .s5-headline { font-family:var(--font-display); font-size:clamp(30px,3.8vw,52px); font-weight:900; font-style:italic; color:var(--cream); line-height:1.05; }
+        .s5-headline em { color:var(--gold); font-style:normal; }
+        .comp-table { width:100%; height:100%; display:grid; grid-template-columns:1.2fr 1fr 1fr 1fr 1fr; }
+        .comp-col { display:flex; flex-direction:column; border-right:1px solid var(--border); }
+        .comp-col:last-child { border-right:none; background:rgba(196,137,26,.03); }
+        .comp-col-head { padding:18px 20px; border-bottom:1px solid var(--border); font-family:var(--font-mono); font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); display:flex; flex-direction:column; gap:5px; min-height:60px; justify-content:flex-end; }
+        .comp-col:last-child .comp-col-head { color:var(--gold); border-bottom-color:var(--gold-dim); }
+        .comp-col-name { font-family:var(--font-display); font-size:15px; font-weight:700; color:var(--cream); }
+        .comp-col:last-child .comp-col-name { color:var(--gold); }
+        .comp-row { padding:12px 20px; border-bottom:1px solid var(--border); font-family:var(--font-body); font-size:13px; color:var(--muted); line-height:1.3; display:flex; align-items:center; gap:7px; flex:1; }
+        .comp-row:last-child { border-bottom:none; }
+        .comp-yes { color:#3aaa6e; font-size:13px; flex-shrink:0; }
+        .comp-no  { color:var(--red); font-size:13px; flex-shrink:0; }
+        .comp-partial { color:var(--gold); font-size:10px; font-family:var(--font-mono); flex-shrink:0; }
+        .comp-col:last-child .comp-row { color:var(--cream-dim); }
+
+        /* ══ S6: TECH STACK ══ */
+        #slide-6 { flex-direction:column; }
+        #slide-6 .ghost-num { bottom:-70px; right:-10px; }
+        .s6-layout { display:grid; grid-template-columns:300px 1fr; width:100%; height:100%; position:relative; z-index:1; }
+        .s6-left { display:flex; flex-direction:column; justify-content:space-between; padding:72px 44px; border-right:1px solid var(--border); }
+        .s6-headline { font-family:var(--font-display); font-size:clamp(28px,3vw,44px); font-weight:900; font-style:italic; color:var(--cream); line-height:1.08; margin-bottom:16px; }
+        .s6-tagline { font-family:var(--font-body); font-size:14px; color:var(--muted); line-height:1.65; font-weight:300; font-style:italic; }
+        .s6-privacy { padding-top:20px; border-top:1px solid var(--border); }
+        .privacy-label { font-family:var(--font-mono); font-size:10px; color:var(--gold); letter-spacing:.2em; text-transform:uppercase; margin-bottom:8px; }
+        .privacy-body { font-family:var(--font-body); font-size:12px; color:var(--muted); line-height:1.6; }
+        .s6-grid { display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(2,1fr); }
+        .tech-cell { padding:32px 28px; border-right:1px solid var(--border); border-bottom:1px solid var(--border); display:flex; flex-direction:column; transition:background .3s; }
+        .tech-cell:nth-child(3n) { border-right:none; }
+        .tech-cell:nth-child(n+4) { border-bottom:none; }
+        .tech-cell:hover { background:rgba(196,137,26,.02); }
+        .tech-category { font-family:var(--font-mono); font-size:10px; color:var(--gold); letter-spacing:.2em; text-transform:uppercase; margin-bottom:12px; }
+        .tech-name { font-family:var(--font-display); font-size:24px; font-weight:700; color:var(--cream); line-height:1.1; margin-bottom:5px; }
+        .tech-detail { font-family:var(--font-mono); font-size:9px; color:var(--muted); letter-spacing:.05em; margin-bottom:10px; }
+        .tech-desc { font-family:var(--font-body); font-size:13px; color:var(--muted); line-height:1.55; font-weight:300; margin-top:auto; }
+
+        /* ══ S7: AUDIENCE ══ */
+        #slide-7 { flex-direction:column; }
+        #slide-7 .ghost-num { top:-60px; left:-20px; }
+        .s7-layout { display:grid; grid-template-rows:auto 1fr; height:100%; position:relative; z-index:1; width:100%; }
+        .s7-header { padding:52px 80px 36px; border-bottom:1px solid var(--border); flex-shrink:0; display:flex; align-items:flex-end; justify-content:space-between; }
+        .s7-headline { font-family:var(--font-display); font-size:clamp(30px,3.8vw,52px); font-weight:900; font-style:italic; color:var(--cream); line-height:1.05; }
+        .s7-stat { text-align:right; }
+        .s7-stat-num { font-family:var(--font-display); font-size:44px; font-weight:900; color:var(--gold); line-height:1; }
+        .s7-stat-label { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:.14em; text-transform:uppercase; margin-top:5px; }
+        .s7-grid { display:grid; grid-template-columns:repeat(4,1fr); }
+        .persona-card { padding:32px 28px 40px; border-right:1px solid var(--border); display:flex; flex-direction:column; position:relative; overflow:hidden; transition:background .35s; }
+        .persona-card:last-child { border-right:none; }
+        .persona-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; }
+        .persona-card:nth-child(1)::before { background:#b83228; }
+        .persona-card:nth-child(2)::before { background:#c4891a; }
+        .persona-card:nth-child(3)::before { background:#2471a3; }
+        .persona-card:nth-child(4)::before { background:#1e8449; }
+        .persona-card:hover { background:rgba(237,228,211,.015); }
+        .persona-type { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:.2em; text-transform:uppercase; margin-bottom:24px; }
+        .persona-name { font-family:var(--font-display); font-size:28px; font-weight:900; color:var(--cream); line-height:1.05; margin-bottom:12px; }
+        .persona-pain { font-family:var(--font-body); font-size:14px; font-style:italic; color:var(--cream-dim); line-height:1.55; margin-bottom:16px; border-left:2px solid var(--border-bright); padding-left:12px; }
+        .persona-detail { font-family:var(--font-body); font-size:12px; color:var(--muted); line-height:1.65; font-weight:300; margin-top:auto; }
+        .persona-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:14px; }
+        .tag { font-family:var(--font-mono); font-size:9px; letter-spacing:.14em; text-transform:uppercase; padding:3px 8px; border:1px solid var(--border-bright); color:var(--muted); }
+    </style>
+</head>
+<body>
+<div class="progress-line" id="progress" style="width:14.28%"></div>
+<div class="brand">TASKER — 2026</div>
+<div class="slide-counter" id="counter">01 / 07</div>
+<div class="deck" id="deck">
+
+<!-- ══════════════════════════════════
+     SLIDE 1 — PROBLEM
+══════════════════════════════════ -->
+<div class="slide active" id="slide-1">
+    <span class="ghost-num">01</span>
+    <div class="s1-layout">
+        <div class="s1-left">
+            <div class="slide-label"><span>01 —</span> The Problem</div>
+            <h1 class="s1-headline">Your inbox<br>is a graveyard<br>of forgotten<br>commitments.</h1>
+            <p class="s1-subline">Every day, action items, deadlines, and promises arrive buried in threads — and vanish just as quietly.</p>
+        </div>
+        <div class="s1-right">
+            <div class="pain-card">
+                <div class="pain-marker"></div>
+                <div>
+                    <div class="pain-title">120+ emails per day</div>
+                    <div class="pain-body">Action items buried three replies deep in chains no one re-reads. Important tasks disappear before they're ever logged.</div>
+                    <div class="pain-stat">∎ avg. knowledge worker receives 121 emails daily</div>
+                </div>
+            </div>
+            <div class="pain-card">
+                <div class="pain-marker"></div>
+                <div>
+                    <div class="pain-title">Context switching kills focus</div>
+                    <div class="pain-body">Bouncing between inbox, task manager, and calendar wastes nearly an hour every day — and still leaves tasks untracked.</div>
+                    <div class="pain-stat">∎ 28% of the workday lost to email management</div>
+                </div>
+            </div>
+            <div class="pain-card">
+                <div class="pain-marker"></div>
+                <div>
+                    <div class="pain-title">Missed deadlines, broken trust</div>
+                    <div class="pain-body">Not carelessness — noise. The commitment was in the thread. It never made it to the list.</div>
+                    <div class="pain-stat">∎ #1 cause of missed deliverables: "didn't see the email"</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════
+     SLIDE 2 — SOLUTION + PIPELINE DIAGRAM
+══════════════════════════════════ -->
+<div class="slide" id="slide-2">
+    <span class="ghost-num">02</span>
+    <div style="display:flex;flex-direction:column;width:100%;height:100%;">
+        <div class="s2-top">
+            <div>
+                <div class="slide-label"><span>02 —</span> Solution & User Journey</div>
+                <h2 class="s2-headline">One connection.<br><em>Zero</em> missed deadlines.</h2>
+                <div class="s2-meta">
+                    <span class="badge badge-green">∎ Open Source</span>
+                    <span class="badge badge-green">∎ P0 Features Free</span>
+                    <span class="badge badge-gold">∎ Working Professionals</span>
+                    <span class="badge badge-gray">∎ Raw Emails Never Stored</span>
+                </div>
+            </div>
+            <!-- Pipeline Architecture Diagram -->
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);letter-spacing:.2em;text-transform:uppercase;margin-bottom:4px;">How it works</div>
+                <svg width="100%" height="90" viewBox="0 0 560 90" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">
+                    <defs>
+                        <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                            <path d="M0,0 L0,6 L6,3 z" fill="#7a5510"/>
+                        </marker>
+                    </defs>
+                    <!-- Nodes -->
+                    <g>
+                        <!-- Gmail -->
+                        <rect x="0" y="20" width="80" height="44" rx="0" fill="rgba(237,228,211,0.03)" stroke="#2e2e34" stroke-width="1"/>
+                        <!-- Gmail envelope icon -->
+                        <polyline points="4,28 40,48 76,28" fill="none" stroke="#5a5650" stroke-width="1.2" transform="translate(0,16)"/>
+                        <rect x="4" y="24" width="72" height="36" rx="0" fill="none" stroke="#5a5650" stroke-width="1" transform="translate(0,16)"/>
+                        <text x="40" y="76" text-anchor="middle" fill="#5a5650" font-family="IBM Plex Mono,monospace" font-size="8" letter-spacing="1">GMAIL</text>
+                    </g>
+                    <line x1="80" y1="42" x2="113" y2="42" stroke="#7a5510" stroke-width="1" marker-end="url(#arr)"/>
+                    <g transform="translate(115,0)">
+                        <rect x="0" y="20" width="80" height="44" rx="0" fill="rgba(237,228,211,0.03)" stroke="#2e2e34" stroke-width="1"/>
+                        <!-- Sync gears icon  -->
+                        <circle cx="30" cy="42" r="10" fill="none" stroke="#5a5650" stroke-width="1"/>
+                        <circle cx="30" cy="42" r="4" fill="none" stroke="#5a5650" stroke-width="1"/>
+                        <circle cx="50" cy="42" r="7" fill="none" stroke="#5a5650" stroke-width="1"/>
+                        <circle cx="50" cy="42" r="2.5" fill="none" stroke="#5a5650" stroke-width="1"/>
+                        <text x="40" y="76" text-anchor="middle" fill="#5a5650" font-family="IBM Plex Mono,monospace" font-size="8" letter-spacing="1">SYNC</text>
+                    </g>
+                    <line x1="195" y1="42" x2="228" y2="42" stroke="#7a5510" stroke-width="1" marker-end="url(#arr)"/>
+                    <g transform="translate(230,0)">
+                        <rect x="0" y="20" width="80" height="44" rx="0" fill="rgba(196,137,26,0.05)" stroke="#7a5510" stroke-width="1"/>
+                        <!-- Graph nodes icon -->
+                        <circle cx="20" cy="38" r="5" fill="none" stroke="#c4891a" stroke-width="1.2"/>
+                        <circle cx="40" cy="30" r="5" fill="none" stroke="#c4891a" stroke-width="1.2"/>
+                        <circle cx="60" cy="42" r="5" fill="none" stroke="#c4891a" stroke-width="1.2"/>
+                        <circle cx="35" cy="52" r="4" fill="none" stroke="#c4891a" stroke-width="1"/>
+                        <line x1="25" y1="38" x2="35" y2="32" stroke="#7a5510" stroke-width="1"/>
+                        <line x1="45" y1="32" x2="55" y2="40" stroke="#7a5510" stroke-width="1"/>
+                        <line x1="22" y1="42" x2="32" y2="50" stroke="#7a5510" stroke-width="1"/>
+                        <line x1="39" y1="54" x2="57" y2="44" stroke="#7a5510" stroke-width="1"/>
+                        <text x="40" y="76" text-anchor="middle" fill="#c4891a" font-family="IBM Plex Mono,monospace" font-size="8" letter-spacing="1">GRAPHRAG</text>
+                    </g>
+                    <line x1="310" y1="42" x2="343" y2="42" stroke="#7a5510" stroke-width="1" marker-end="url(#arr)"/>
+                    <g transform="translate(345,0)">
+                        <rect x="0" y="20" width="80" height="44" rx="0" fill="rgba(237,228,211,0.03)" stroke="#2e2e34" stroke-width="1"/>
+                        <!-- Brain/LLM icon -->
+                        <ellipse cx="40" cy="40" rx="22" ry="16" fill="none" stroke="#5a5650" stroke-width="1"/>
+                        <line x1="25" y1="33" x2="25" y2="47" stroke="#5a5650" stroke-width="0.8"/>
+                        <line x1="33" y1="26" x2="33" y2="54" stroke="#5a5650" stroke-width="0.8"/>
+                        <line x1="40" y1="24" x2="40" y2="56" stroke="#5a5650" stroke-width="0.8"/>
+                        <line x1="47" y1="26" x2="47" y2="54" stroke="#5a5650" stroke-width="0.8"/>
+                        <line x1="55" y1="33" x2="55" y2="47" stroke="#5a5650" stroke-width="0.8"/>
+                        <text x="40" y="76" text-anchor="middle" fill="#5a5650" font-family="IBM Plex Mono,monospace" font-size="8" letter-spacing="1">LLAMA-3</text>
+                    </g>
+                    <line x1="425" y1="42" x2="458" y2="42" stroke="#7a5510" stroke-width="1" marker-end="url(#arr)"/>
+                    <g transform="translate(460,0)">
+                        <rect x="0" y="20" width="80" height="44" rx="0" fill="rgba(196,137,26,0.07)" stroke="#c4891a" stroke-width="1"/>
+                        <!-- Checklist icon -->
+                        <rect x="15" y="30" width="50" height="24" rx="0" fill="none" stroke="#c4891a" stroke-width="1"/>
+                        <line x1="15" y1="38" x2="65" y2="38" stroke="#c4891a" stroke-width="0.8" opacity=".5"/>
+                        <line x1="15" y1="46" x2="65" y2="46" stroke="#c4891a" stroke-width="0.8" opacity=".5"/>
+                        <circle cx="22" cy="34" r="2" fill="#c4891a"/>
+                        <circle cx="22" cy="42" r="2" fill="#c4891a" opacity=".6"/>
+                        <circle cx="22" cy="50" r="2" fill="#c4891a" opacity=".3"/>
+                        <text x="40" y="76" text-anchor="middle" fill="#c4891a" font-family="IBM Plex Mono,monospace" font-size="8" letter-spacing="1">DASHBOARD</text>
+                    </g>
+                </svg>
+            </div>
+        </div>
+        <div class="s2-steps">
+            <div class="journey-step">
+                <div class="step-num">STEP 01</div>
+                <div class="step-glyph">⌁</div>
+                <div class="step-title">Connect Gmail</div>
+                <div class="step-body">OAuth in one click. Tasker listens via Gmail Pub/Sub — no passwords stored, emails never persisted.</div>
+                <div class="step-arrow">›</div>
+            </div>
+            <div class="journey-step">
+                <div class="step-num">STEP 02</div>
+                <div class="step-glyph">◈</div>
+                <div class="step-title">AI reads your threads</div>
+                <div class="step-body">Llama 3 + GraphRAG maps people, projects, and commitments. PII stripped before any LLM call. Raw emails are never written to disk.</div>
+                <div class="step-arrow">›</div>
+            </div>
+            <div class="journey-step">
+                <div class="step-num">STEP 03</div>
+                <div class="step-glyph">▣</div>
+                <div class="step-title">Tasks surface instantly</div>
+                <div class="step-body">Deadlines, commitments, and blockers appear as urgency-ranked cards — extracted and prioritized automatically.</div>
+                <div class="step-arrow">›</div>
+            </div>
+            <div class="journey-step">
+                <div class="step-num">STEP 04</div>
+                <div class="step-glyph">◎</div>
+                <div class="step-title">Ask AI for context</div>
+                <div class="step-body">Stuck on a task? The AI knows the full thread — who committed to what, what's unresolved, what to do next.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════
+     SLIDE 3 — P0 FEATURES WITH FLOW DIAGRAMS
+══════════════════════════════════ -->
+<div class="slide" id="slide-3">
+    <span class="ghost-num">03</span>
+    <div class="s3-layout">
+        <div class="s3-header">
+            <div class="slide-label"><span>03 —</span> Features · P0</div>
+            <h3 class="s3-headline">What's <em>live</em> right now.</h3>
+        </div>
+        <div class="s3-features">
+            <!-- Feature 1: Action Insight -->
+            <div class="feature-col">
+                <span class="badge badge-gold">P0 · Free Forever</span>
+                <div class="feature-number">01</div>
+                <div class="feature-name">Action Insight Extraction</div>
+                <!-- Flow diagram -->
+                <div class="feature-flow">
+                    <div class="fnode">120 Emails</div>
+                    <div class="farrow"></div>
+                    <div class="fnode">AI Reads All</div>
+                    <div class="farrow"></div>
+                    <div class="fnode fnode-hl">5 Actions Today</div>
+                </div>
+                <div class="feature-problem">"I spent 40 minutes figuring out what actually needs my attention. Most of it was noise."</div>
+                <div class="feature-solution">Tasker reads every email and builds a clean, prioritized list of what you actually need to do today — approve something, reply to someone, show up somewhere. No manual sorting, no tags, no setup.</div>
+                <div class="feature-edge">∎ Gmail summarizes emails. Tasker tells you what you owe people. Completely different thing.</div>
+            </div>
+            <!-- Feature 2: Commitment Drift -->
+            <div class="feature-col" style="border-left:1px solid var(--border);">
+                <span class="badge badge-gold">P0 · Free Forever</span>
+                <div class="feature-number">02</div>
+                <div class="feature-name">Commitment Drift Detection</div>
+                <!-- Flow diagram -->
+                <div class="feature-flow">
+                    <div class="fnode">Sent Mail</div>
+                    <div class="farrow"></div>
+                    <div class="fnode">Promise Found</div>
+                    <div class="farrow"></div>
+                    <div class="fnode fnode-hl">Remind Before Due</div>
+                </div>
+                <div class="feature-problem">"I typed 'I'll get this to you by Thursday' last Monday. It's Friday. They're following up."</div>
+                <div class="feature-solution">Tasker watches your sent folder for outbound promises. If Thursday arrives and you haven't followed up, it reminds you before they have to chase you.</div>
+                <div class="feature-edge">∎ Every tool watches your inbox. Nobody watches what you promised on the way out. Untapped.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════
+     SLIDE 4 — ROADMAP WITH TIMELINE DIAGRAM
+══════════════════════════════════ -->
+<div class="slide" id="slide-4">
+    <span class="ghost-num">04</span>
+    <div class="s4-layout">
+        <div class="s4-header">
+            <div class="slide-label"><span>04 —</span> Roadmap</div>
+            <h4 class="s4-headline">Where we're going.</h4>
+        </div>
+        <div class="s4-body">
+            <!-- Timeline visual -->
+            <div style="margin-bottom:28px;">
+                <svg width="100%" height="56" viewBox="0 0 900 56" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="tlgrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" style="stop-color:#c4891a;stop-opacity:1"/>
+                            <stop offset="50%" style="stop-color:#5ba3d0;stop-opacity:1"/>
+                            <stop offset="100%" style="stop-color:#5a5650;stop-opacity:1"/>
+                        </linearGradient>
+                    </defs>
+                    <!-- Main timeline line -->
+                    <line x1="60" y1="20" x2="840" y2="20" stroke="url(#tlgrad)" stroke-width="1.5"/>
+                    <!-- P0 marker -->
+                    <circle cx="150" cy="20" r="7" fill="#08080a" stroke="#c4891a" stroke-width="2"/>
+                    <circle cx="150" cy="20" r="3" fill="#c4891a"/>
+                    <text x="150" y="42" text-anchor="middle" fill="#c4891a" font-family="IBM Plex Mono,monospace" font-size="10" letter-spacing="2">P0</text>
+                    <text x="150" y="54" text-anchor="middle" fill="#7a5510" font-family="IBM Plex Mono,monospace" font-size="8">NOW</text>
+                    <!-- P0 label -->
+                    <text x="150" y="10" text-anchor="middle" fill="#c4891a" font-family="IBM Plex Mono,monospace" font-size="8" opacity=".7">Action · Commitment</text>
+                    <!-- P1 marker -->
+                    <circle cx="450" cy="20" r="7" fill="#08080a" stroke="#5ba3d0" stroke-width="2"/>
+                    <circle cx="450" cy="20" r="3" fill="#5ba3d0"/>
+                    <text x="450" y="42" text-anchor="middle" fill="#5ba3d0" font-family="IBM Plex Mono,monospace" font-size="10" letter-spacing="2">P1</text>
+                    <text x="450" y="54" text-anchor="middle" fill="#2471a3" font-family="IBM Plex Mono,monospace" font-size="8">Q3 2026</text>
+                    <text x="450" y="10" text-anchor="middle" fill="#5ba3d0" font-family="IBM Plex Mono,monospace" font-size="8" opacity=".7">Blockers · Sentiment · Clusters</text>
+                    <!-- P2 marker -->
+                    <circle cx="750" cy="20" r="7" fill="#08080a" stroke="#5a5650" stroke-width="2"/>
+                    <circle cx="750" cy="20" r="3" fill="#5a5650"/>
+                    <text x="750" y="42" text-anchor="middle" fill="#5a5650" font-family="IBM Plex Mono,monospace" font-size="10" letter-spacing="2">P2</text>
+                    <text x="750" y="54" text-anchor="middle" fill="#3a3a40" font-family="IBM Plex Mono,monospace" font-size="8">Q4 2026</text>
+                    <text x="750" y="10" text-anchor="middle" fill="#5a5650" font-family="IBM Plex Mono,monospace" font-size="8" opacity=".7">Velocity · Meetings</text>
+                    <!-- End arrow -->
+                    <polygon points="840,17 840,23 854,20" fill="#5a5650" opacity=".4"/>
+                </svg>
+            </div>
+            <!-- Three-column feature cards -->
+            <div class="roadmap-cols">
+                <!-- P0 (completed) -->
+                <div class="roadmap-col">
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border);">
+                        <span class="badge badge-gold" style="margin:0">P0 · Live · Free</span>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p0"></div>
+                        <div><div class="rname">Action Insight Extraction</div><div class="rhelp">Flat prioritized list of what you owe today — approve, reply, attend. No inbox triage.</div></div>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p0"></div>
+                        <div><div class="rname">Commitment Drift Detection</div><div class="rhelp">Watches sent folder for outbound promises. Reminds you before they follow up.</div></div>
+                    </div>
+                </div>
+                <!-- P1 -->
+                <div class="roadmap-col">
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border);">
+                        <span class="badge badge-blue" style="margin:0">P1 · Coming Soon</span>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p1"></div>
+                        <div><div class="rname">Ghost Blocker Mapping</div><div class="rhelp">Auto-detects who's blocked on whom from CC chains. Surfaces when you are the bottleneck, before a sprint miss.</div></div>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p1"></div>
+                        <div><div class="rname">Escalation Predictor</div><div class="rhelp">Tracks tone shifts across threads. Flags high-risk relationships while you can still fix them.</div></div>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p1"></div>
+                        <div><div class="rname">Email Clustering</div><div class="rhelp">Groups all threads by project regardless of subject or sender. One view per context.</div></div>
+                    </div>
+                </div>
+                <!-- P2 -->
+                <div class="roadmap-col">
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border);">
+                        <span class="badge badge-gray" style="margin:0">P2 · On Horizon</span>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p2"></div>
+                        <div><div class="rname">Response Velocity Tracker</div><div class="rhelp">Per-contact reply-time baseline. Catches relationship cooldown early — before it costs you business.</div></div>
+                    </div>
+                    <div class="roadmap-item">
+                        <div class="rdot rdot-p2"></div>
+                        <div><div class="rname">Meeting-to-Action Bridge</div><div class="rhelp">Reads the meeting recap and drops commitments into your action log. Zero manual entry, ever.</div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════
+     SLIDE 5 — COMPETITIVE DIFF
+══════════════════════════════════ -->
+<div class="slide" id="slide-5">
+    <span class="ghost-num">05</span>
+    <div class="s5-layout">
+        <div class="s5-header">
+            <div class="slide-label"><span>05 —</span> Competitive Differentiation</div>
+            <h5 class="s5-headline">The gap <em>nobody</em> filled.</h5>
+        </div>
+        <div class="comp-table">
+            <div class="comp-col">
+                <div class="comp-col-head" style="padding-top:28px;">
+                    <div style="font-family:var(--font-mono);font-size:9px;letter-spacing:.2em;color:var(--muted);text-transform:uppercase;">Capability</div>
+                </div>
+                <div class="comp-row">Email → task extraction</div>
+                <div class="comp-row">Tracks outbound promises</div>
+                <div class="comp-row">Blocker detection (auto)</div>
+                <div class="comp-row">Escalation risk from tone</div>
+                <div class="comp-row">Relationship graph (GraphRAG)</div>
+                <div class="comp-row">Zero email retention (privacy)</div>
+                <div class="comp-row">P0 features free</div>
+                <div class="comp-row">Open Source</div>
+            </div>
+            <div class="comp-col">
+                <div class="comp-col-head"><div class="comp-col-name">Gmail</div><div>Inbox mgmt</div></div>
+                <div class="comp-row"><span class="comp-partial">~</span> Summaries only</div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-partial">~</span> Free tier</div>
+                <div class="comp-row"><span class="comp-no">✗</span> Stores everything</div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+            </div>
+            <div class="comp-col">
+                <div class="comp-col-head"><div class="comp-col-name">Superhuman</div><div>Speed + triage</div></div>
+                <div class="comp-row"><span class="comp-partial">~</span> AI triage only</div>
+                <div class="comp-row"><span class="comp-partial">~</span> Snooze / remind</div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span> $30/mo</div>
+                <div class="comp-row"><span class="comp-no">✗</span> Closed, $30/mo</div>
+            </div>
+            <div class="comp-col">
+                <div class="comp-col-head"><div class="comp-col-name">Jira / Linear</div><div>Project tracking</div></div>
+                <div class="comp-row"><span class="comp-no">✗</span> Manual entry</div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-partial">~</span> Manual links</div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span></div>
+                <div class="comp-row"><span class="comp-no">✗</span> Paid plans</div>
+                <div class="comp-row"><span class="comp-partial">~</span> Partial</div>
+            </div>
+            <div class="comp-col">
+                <div class="comp-col-head"><div class="comp-col-name">Tasker ✦</div><div>AI action intelligence</div></div>
+                <div class="comp-row"><span class="comp-yes">✓</span> Auto + prioritized</div>
+                <div class="comp-row"><span class="comp-yes">✓</span> Live · P0</div>
+                <div class="comp-row"><span class="comp-partial">~</span> P1 · roadmap</div>
+                <div class="comp-row"><span class="comp-partial">~</span> P1 · roadmap</div>
+                <div class="comp-row"><span class="comp-yes">✓</span> Full graph</div>
+                <div class="comp-row"><span class="comp-yes">✓</span> P0 free forever</div>
+                <div class="comp-row"><span class="comp-yes">✓</span> Never stored · core principle</div>
+                <div class="comp-row"><span class="comp-yes">✓</span> 100% open</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════
+     SLIDE 6 — TECH STACK
+══════════════════════════════════ -->
+<div class="slide" id="slide-6">
+    <span class="ghost-num">06</span>
+    <div class="s6-layout">
+        <div class="s6-left">
+            <div>
+                <div class="slide-label"><span>06 —</span> Tech Stack</div>
+                <div class="s6-headline">Engineered<br>for speed,<br>built for<br>privacy.</div>
+                <p class="s6-tagline">Every decision optimized for zero-latency extraction and zero-trust data handling.</p>
+            </div>
+            <div class="s6-privacy">
+                <div class="privacy-label">∎ Privacy · Non-Negotiable</div>
+                <div class="privacy-body" style="margin-bottom:10px;color:var(--cream-dim);font-style:italic;font-size:13px;">We never store your raw emails. Ever.</div>
+                <div class="privacy-body">Emails are processed in-memory, PII stripped in 3 stages (regex → WASM → rehydration), then discarded. Only extracted tasks and metadata are persisted. Your inbox content is yours alone.</div>
+            </div>
+        </div>
+        <div class="s6-grid">
+            <div class="tech-cell">
+                <div class="tech-category">Frontend</div>
+                <div class="tech-name">React 19<br>+ Vite</div>
+                <div class="tech-detail">Static SPA · @supabase/supabase-js</div>
+                <div class="tech-desc">Real-time dashboard with urgency-colored task cards and live sync indicators.</div>
+            </div>
+            <div class="tech-cell">
+                <div class="tech-category">Backend</div>
+                <div class="tech-name">Supabase<br>Edge Fn</div>
+                <div class="tech-detail">Deno/TypeScript · PostgreSQL + RLS</div>
+                <div class="tech-desc">Serverless functions handle ingestion, extraction, and delivery. No separate server.</div>
+            </div>
+            <div class="tech-cell">
+                <div class="tech-category">AI Brain</div>
+                <div class="tech-name">Groq<br>Llama 3</div>
+                <div class="tech-detail">llama-3.3-70b-versatile · ~200ms inference</div>
+                <div class="tech-desc">State-of-the-art open model on Groq's LPU — fast enough for real-time email→task extraction.</div>
+            </div>
+            <div class="tech-cell">
+                <div class="tech-category">Email Layer</div>
+                <div class="tech-name">Gmail<br>API</div>
+                <div class="tech-detail">Pub/Sub webhooks · OAuth 2.0</div>
+                <div class="tech-desc">Push-based — tasks appear seconds after email arrives, not on a polling schedule.</div>
+            </div>
+            <div class="tech-cell">
+                <div class="tech-category">Intelligence</div>
+                <div class="tech-name">Graph<br>RAG</div>
+                <div class="tech-detail">Entity graph · 2-hop traversal</div>
+                <div class="tech-desc">Maps people ↔ projects ↔ commitments. Surfaces patterns no single email reveals.</div>
+            </div>
+            <div class="tech-cell">
+                <div class="tech-category">Data Layer</div>
+                <div class="tech-name">pgvector<br>+ RLS</div>
+                <div class="tech-detail">Semantic search · Row-Level Security</div>
+                <div class="tech-desc">User data isolated at the database level — every query scoped to the authenticated user.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════
+     SLIDE 7 — TARGET AUDIENCE
+══════════════════════════════════ -->
+<div class="slide" id="slide-7">
+    <span class="ghost-num">07</span>
+    <div class="s7-layout">
+        <div class="s7-header">
+            <div>
+                <div class="slide-label"><span>07 —</span> Target Audience</div>
+                <h6 class="s7-headline">Built for the<br>perpetually cc'd.</h6>
+            </div>
+            <div class="s7-stat">
+                <div class="s7-stat-num">1.2B</div>
+                <div class="s7-stat-label">working professionals globally</div>
+            </div>
+        </div>
+        <div class="s7-grid">
+            <div class="persona-card">
+                <div class="persona-type">Persona 01</div>
+                <div class="persona-name">The<br>Account Exec</div>
+                <div class="persona-pain">"I told the client I'd send the proposal by Wednesday. It's Thursday. I forgot."</div>
+                <div class="persona-detail">Managing 20+ client threads with outbound promises in every reply. Commitment Drift Detection (P0) was built for this exact person.</div>
+                <div class="persona-tags"><span class="tag">Commitments</span><span class="tag">Follow-ups</span><span class="tag">Clients</span></div>
+            </div>
+            <div class="persona-card">
+                <div class="persona-type">Persona 02</div>
+                <div class="persona-name">The<br>Team Lead</div>
+                <div class="persona-pain">"Three engineers are blocked waiting on my sign-off. Nobody pinged me. Two days gone."</div>
+                <div class="persona-detail">Ghost Blocker Mapping (P1) surfaces exactly this — you're the bottleneck before it becomes a sprint miss or an escalation.</div>
+                <div class="persona-tags"><span class="tag">Blockers</span><span class="tag">Sprint</span><span class="tag">Team</span></div>
+            </div>
+            <div class="persona-card">
+                <div class="persona-type">Persona 03</div>
+                <div class="persona-name">The<br>PM</div>
+                <div class="persona-pain">"Action items from Monday's meeting recap. Nobody transferred them to Jira. Again."</div>
+                <div class="persona-detail">Meeting-to-Action Bridge (P2) reads the recap and drops commitments into the action log automatically. Zero manual entry.</div>
+                <div class="persona-tags"><span class="tag">Meetings</span><span class="tag">Delivery</span><span class="tag">Actions</span></div>
+            </div>
+            <div class="persona-card">
+                <div class="persona-type">Persona 04</div>
+                <div class="persona-name">The<br>Founder</div>
+                <div class="persona-pain">"My best investor used to reply the same day. Now it takes a week. I missed the shift."</div>
+                <div class="persona-detail">Response Velocity Tracker (P2) catches relationship cooldown early — before it shows up as a difficult conversation or lost funding.</div>
+                <div class="persona-tags"><span class="tag">Relationships</span><span class="tag">Investors</span><span class="tag">Risk</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+</div><!-- /deck -->
+
+<div class="nav" id="nav-dots"></div>
+<div class="kbd-hint">← → NAVIGATE</div>
+
+<script>
+    const TOTAL = 7;
+    const slides  = document.querySelectorAll('.slide');
+    const counter = document.getElementById('counter');
+    const progress = document.getElementById('progress');
+    const navEl   = document.getElementById('nav-dots');
+    let current = 0, busy = false;
+
+    for (let i = 0; i < TOTAL; i++) {
+        const d = document.createElement('div');
+        d.className = 'nav-dot' + (i === 0 ? ' active' : '');
+        d.onclick = () => goTo(i);
+        navEl.appendChild(d);
+    }
+    const dots = navEl.querySelectorAll('.nav-dot');
+
+    function goTo(idx) {
+        if (busy || idx === current || idx < 0 || idx >= TOTAL) return;
+        busy = true;
+        slides[current].classList.add('exit');
+        dots[current].classList.remove('active');
+        setTimeout(() => {
+            slides[current].classList.remove('active','exit');
+            current = idx;
+            slides[current].classList.add('active');
+            dots[current].classList.add('active');
+            counter.textContent = String(current+1).padStart(2,'0') + ' / 0' + TOTAL;
+            progress.style.width = ((current+1)/TOTAL*100) + '%';
+            busy = false;
+        }, 360);
+    }
+
+    document.addEventListener('keydown', e => {
+        if (e.key==='ArrowRight'||e.key==='ArrowDown') goTo(current+1);
+        if (e.key==='ArrowLeft' ||e.key==='ArrowUp')   goTo(current-1);
+    });
+
+    let tx = 0;
+    document.addEventListener('touchstart', e => { tx = e.touches[0].clientX; },{passive:true});
+    document.addEventListener('touchend',   e => {
+        const dx = e.changedTouches[0].clientX - tx;
+        if (Math.abs(dx)>48) dx<0 ? goTo(current+1) : goTo(current-1);
+    });
+</script>
+</body>
+</html>

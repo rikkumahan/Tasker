@@ -92,11 +92,11 @@ Do NOT use the pipe character "|" in descriptions or entity names. If you need a
 
 Entity format:
 ("entity"|<name>|<type>|<description>)
-Supported entity types: CONTACT, ORGANIZATION, PROJECT, TASK, TOPIC
+Supported entity types: PERSON, ORGANIZATION, PROJECT, TASK, EVENT, DOCUMENT, COMMITMENT, TOPIC
 
 Relationship format:
 ("relationship"|<source>|<target>|<relation_type>|<description>|<strength>)
-Supported relation types: SENT_BY, ASSIGNED_TO, MEMBER_OF, PART_OF, DISPUTED_WITH, BLOCKED_BY, DISCUSSES
+Supported relation types: WORKS_FOR, ASSIGNED_TO, PART_OF, DISCUSSES, ATTENDS, REFERENCES, COMMITS_TO, BLOCKED_BY
 
 EMAIL CONTENT:
 ${redactedText}
@@ -333,7 +333,7 @@ export class GraphRAGStore {
     });
   }
 
-  async ingestEmailToGraph(raw: any, userId: string) {
+  async ingestEmailToGraph(raw: any, userId: string, is_historical: boolean = false) {
     const normSubject = raw.subject || "(no subject)";
     const normBody = raw.body || "";
 
@@ -372,8 +372,8 @@ export class GraphRAGStore {
         sender_name: senderName,
         sender_email: senderEmail,
         subject: normSubject,
-        body: normBody,
-        snippet: normBody.substring(0, 300),
+        body: null, // Zero-Retention: discard raw body
+        snippet: normBody.substring(0, 100), // Only save a short preview
         received_at: raw.received_at || new Date().toISOString(),
         embedding: isValidVec(senderEmbedding) ? senderEmbedding : null,
       },
@@ -394,6 +394,8 @@ export class GraphRAGStore {
 
     const { error } = await this.supabase.rpc("ingest_graphrag_payload", { payload });
     if (error) console.error(`[GraphRAG] ingest_graphrag_payload failed for ${raw.message_id}:`, error.message);
+
+    return { entities, relationships };
   }
 
   async buildCommunities(userId: string) {
@@ -558,3 +560,46 @@ OUTPUT:`;
     };
   }
 }
+
+// ─────────────────────────────────────────────
+// CONTEXTUAL TASK EXTRACTOR (Phase 3)
+// ─────────────────────────────────────────────
+const TASK_EXTRACTION_MODEL = "meta-llama/llama-3.1-8b-instant";
+
+export class ContextualTaskExtractor {
+  async extractTasks(emailBody: string, emailSubject: string, contextString: string) {
+    const redactedText = prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
+    
+    const prompt = `You are an AI Executive Assistant. Read this email and use the context to generate structured action items.
+The output MUST be valid JSON. Do not include markdown formatting or extra text.
+
+JSON Schema:
+{
+  "urgency": "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  "action_type": "view" | "reply" | "review" | "approve" | "join",
+  "ai_summary": "1-2 sentence semantic summary of the email",
+  "action_items": [{"task": "Do X", "assignee": "Bob"}],
+  "suggested_reply": "Draft reply text, or empty string if no reply needed"
+}
+
+EMAIL CONTENT:
+${redactedText}
+
+GRAPH CONTEXT (Entities & Relationships):
+${contextString}
+
+OUTPUT JSON:`;
+
+    const responseText = await callLLM(prompt, { model: TASK_EXTRACTION_MODEL, temperature: 0.1, jsonFormat: true });
+    
+    try {
+      if (!responseText) return null;
+      const parsed = JSON.parse(responseText);
+      return parsed;
+    } catch (e) {
+      console.error("ContextualTaskExtractor JSON parse error:", e);
+      return null;
+    }
+  }
+}
+

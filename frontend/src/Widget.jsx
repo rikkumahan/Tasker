@@ -24,21 +24,6 @@ export default function Widget() {
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState(null);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) loadTasks(session);
-      else setLoading(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) loadTasks(session);
-      else { setTopTasks([]); setLoading(false); }
-    });
-    return () => subscription.unsubscribe();
-  }, []);
-
   const loadTasks = async (sess) => {
     const { data, error } = await supabase
       .from('tasks')
@@ -57,6 +42,21 @@ export default function Widget() {
     }
     setLoading(false);
   };
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) loadTasks(session);
+      else setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) loadTasks(session);
+      else { setTopTasks([]); setLoading(false); }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Phase 9: Badging API — set badge count on icon
   useEffect(() => {

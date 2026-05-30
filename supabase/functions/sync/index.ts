@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders } from "../_shared/cors.ts";
 import { decodeBody, sleep, cleanEmailBody, isSpamOrAd, isWorthProcessing, processInBatches } from "../_shared/utils.ts";
 import { refreshGmailToken } from "../_shared/oauth.ts";
-import { GraphRAGStore, getEmbedding } from "../_shared/graph.ts";
+import { GraphRAGStore, getEmbedding, ContextualTaskExtractor } from "../_shared/graph.ts";
 
 // ─────────────────────────────────────────────
 // Constants — Groq free-tier aware
@@ -242,7 +242,7 @@ Deno.serve(async (req: Request) => {
 
     asyncLog(supabaseAdmin, user.id, "GRAPHRAG_SYNC_START", {});
 
-    const isOnboarding = !settings.last_synced_at;
+    const isOnboarding = settings.onboarding_status === 'queued' || settings.onboarding_status === 'processing';
     let gmailToken = settings.gmail_token?.token;
     if (!gmailToken) return new Response(JSON.stringify({ error: "No Gmail Token" }), { status: 400, headers: corsHeaders });
 
@@ -472,8 +472,8 @@ Deno.serve(async (req: Request) => {
           }
           consecutiveSkips = 0; // reset on successful pass-through
 
-          // ── INGEST TO GRAPH ──
-          await graphStore.ingestEmailToGraph({
+          // ── INGEST TO GRAPH (Phase 3: Zero-Retention) ──
+          const extractionResult = await graphStore.ingestEmailToGraph({
             message_id: firstMsg.id,
             subject,
             body: combinedBody,
@@ -481,6 +481,29 @@ Deno.serve(async (req: Request) => {
             thread_id: threadId,
             received_at: dateStr ? new Date(dateStr).toISOString() : new Date().toISOString(),
           }, user.id);
+
+          // ── LIVE WEBHOOK TASK EXTRACTION (SRP Fixed) ──
+          // We only call the LLM to extract UI Tasks if it's a live webhook.
+          if (!isOnboarding && extractionResult) {
+            const { entities, relationships } = extractionResult;
+            const taskExtractor = new ContextualTaskExtractor();
+            const contextString = `Entities: ${JSON.stringify(entities.map((e: any)=>e.name))}\nRelationships: ${JSON.stringify(relationships.map((r: any)=>`${r.source} ${r.relationType} ${r.target}`))}`;
+            
+            const extractedTasks = await taskExtractor.extractTasks(combinedBody, subject, contextString);
+
+            // Instantly update the threads table for the Dashboard API
+            if (extractedTasks) {
+              const { error: updateErr } = await supabaseAdmin.from("threads").update({
+                urgency: extractedTasks.urgency,
+                action_type: extractedTasks.action_type,
+                ai_summary: extractedTasks.ai_summary,
+                action_items: extractedTasks.action_items,
+                suggested_reply: extractedTasks.suggested_reply
+              }).eq("gmail_thread_id", threadId).eq("user_id", user.id);
+              
+              if (updateErr) console.warn(`Failed to update thread tasks for ${threadId}:`, updateErr.message);
+            }
+          }
 
           threadsProcessed++;
 
@@ -543,8 +566,13 @@ Deno.serve(async (req: Request) => {
       });
     };
 
-    // Fire the pipeline — non-blocking so we can return immediately
-    fireAndForget(graphPipeline());
+    // Onboarding: await the pipeline so the final status update always commits before exit.
+    // Live webhook syncs: fire-and-forget so we return 200 immediately.
+    if (isOnboarding) {
+      await graphPipeline();
+    } else {
+      fireAndForget(graphPipeline());
+    }
 
     // Estimate for frontend progress screen
     const estimatedSeconds = Math.ceil(
