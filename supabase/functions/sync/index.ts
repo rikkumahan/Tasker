@@ -502,6 +502,23 @@ Deno.serve(async (req: Request) => {
               }).eq("gmail_thread_id", threadId).eq("user_id", user.id);
               
               if (updateErr) console.warn(`Failed to update thread tasks for ${threadId}:`, updateErr.message);
+
+              // ── CRITICAL FIX: INSERT INTO TASKS TABLE ──
+              if (extractedTasks.action_items && Array.isArray(extractedTasks.action_items)) {
+                const tasksToInsert = extractedTasks.action_items.map((item: any) => ({
+                  user_id: user.id,
+                  title: item.task || "New Task",
+                  summary: extractedTasks.ai_summary,
+                  source_email_id: threadId,
+                  status: 'todo',
+                  category: extractedTasks.action_type || 'task'
+                }));
+
+                if (tasksToInsert.length > 0) {
+                  const { error: insertErr } = await supabaseAdmin.from("tasks").insert(tasksToInsert);
+                  if (insertErr) console.error("Failed to insert into tasks table:", insertErr.message);
+                }
+              }
             }
           }
 
