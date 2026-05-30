@@ -9,7 +9,9 @@ import AskAIView from './AskAIView';
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 export default function Dashboard({ session, supabase, wizardStep, onSignOut }) {
-  const [threads, setThreads]           = useState([]);
+  const [threadsCache, setThreadsCache] = useState({});
+  const threadsCacheRef                 = useRef({});
+  const threads = threadsCache[activeFilter] || [];
   const [loading, setLoading]           = useState(true);
   const [activeView, setActiveView]     = useState('tasks');
   const [activeFilter, setActiveFilter] = useState('all');
@@ -24,7 +26,8 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
     if (!session) return;
     if (fetchingRef.current && offset === 0) return;
     fetchingRef.current = true;
-    if (offset === 0 && !append) setLoading(true);
+    const hasCache = !!threadsCacheRef.current[filter]?.length;
+    if (offset === 0 && !append && !hasCache) setLoading(true);
 
     try {
       const { data, error } = await supabase.functions.invoke('api/feed', {
@@ -36,7 +39,16 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
       });
       if (error) throw error;
       const incoming = data?.threads || [];
-      setThreads(prev => append ? [...prev, ...incoming] : incoming);
+      
+      const currentList = threadsCacheRef.current[filter] || [];
+      const newList = append ? [...currentList, ...incoming] : incoming;
+      
+      threadsCacheRef.current = {
+        ...threadsCacheRef.current,
+        [filter]: newList
+      };
+      
+      setThreadsCache(threadsCacheRef.current);
       setNextOffset(data?.nextOffset ?? 0);
     } catch (e) {
       console.error('[Dashboard] fetchThreads error:', e);
@@ -116,10 +128,11 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
     }
   };
 
+  const baseThreads = threadsCache['all'] || [];
   const threadCounts = {
-    inbox:    threads.length,
-    priority: threads.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH').length,
-    unread:   threads.filter(t => !t.is_read).length,
+    inbox:    baseThreads.length,
+    priority: baseThreads.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH').length,
+    unread:   baseThreads.filter(t => !t.is_read).length,
   };
 
   const renderContent = () => {
