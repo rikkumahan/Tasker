@@ -564,7 +564,7 @@ OUTPUT:`;
 // ─────────────────────────────────────────────
 // CONTEXTUAL TASK EXTRACTOR (Phase 3)
 // ─────────────────────────────────────────────
-const TASK_EXTRACTION_MODEL = "meta-llama/llama-3.1-8b-instant";
+const TASK_EXTRACTION_MODEL = "llama-3.1-8b-instant";
 
 export class ContextualTaskExtractor {
   async extractTasks(emailBody: string, emailSubject: string, contextString: string) {

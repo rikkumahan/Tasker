@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ExternalLink, Copy, Check } from 'lucide-react';
 
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -27,10 +27,14 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-// Normalise action_items: Supabase JSONB may return string[] or {text:string}[]
+// Normalise action_items: Supabase JSONB may return string[] or {text:string}[] or {task:string, assignee:string}[]
 function normaliseItems(raw) {
   if (!Array.isArray(raw)) return [];
-  return raw.map(item => (typeof item === 'string' ? item : item?.text || JSON.stringify(item)));
+  return raw.map(item => {
+    if (typeof item === 'string') return item;
+    if (item?.task) return item.assignee ? `${item.task} (Assignee: ${item.assignee})` : item.task;
+    return item?.text || JSON.stringify(item);
+  });
 }
 
 const TABS = ['summary', 'email', 'context'];
@@ -44,7 +48,8 @@ export default function TaskDetail({ thread, session, supabase }) {
   const [copied, setCopied]               = useState(false);
   const [checked, setChecked]             = useState({});
   const [liveEmails, setLiveEmails]       = useState({});
-  const [fetchingEmails, setFetchingEmails] = useState({});
+  // Use a ref for in-flight guard so it doesn't retrigger the fetch effect
+  const fetchingRef = useRef({});
 
   useEffect(() => {
     if (!thread?.id) { 
@@ -73,13 +78,14 @@ export default function TaskDetail({ thread, session, supabase }) {
       console.error('[TaskDetail] fetch error:', e);
       setDetailError(e.message || 'Could not load thread details. Please try again.');
     }).finally(() => setDetailLoading(false));
-  }, [thread?.id, session, supabase.functions]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thread?.id, session]);
 
   useEffect(() => {
     if (activeTab === 'email' && detail?.emails?.length > 0) {
       detail.emails.forEach(email => {
-        if (!liveEmails[email.id] && !fetchingEmails[email.id] && email.message_id) {
-          setFetchingEmails(prev => ({ ...prev, [email.id]: true }));
+        if (!liveEmails[email.id] && !fetchingRef.current[email.id] && email.message_id) {
+          fetchingRef.current[email.id] = true;
           supabase.functions.invoke('api/raw-email', {
             body: { message_id: email.message_id },
             headers: {
@@ -93,12 +99,14 @@ export default function TaskDetail({ thread, session, supabase }) {
             console.error('[TaskDetail] Failed to fetch raw email:', e);
             setLiveEmails(prev => ({ ...prev, [email.id]: email.body || '(Could not load email)' }));
           }).finally(() => {
-            setFetchingEmails(prev => ({ ...prev, [email.id]: false }));
+            fetchingRef.current[email.id] = false;
           });
         }
       });
     }
-  }, [activeTab, detail?.emails, session, fetchingEmails, liveEmails, supabase.functions]);
+  // fetchingRef is a stable ref, liveEmails setter is stable — only retrigger on tab/emails change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, detail?.emails, session]);
 
   const handleCopy = () => {
     const reply = detail?.thread?.suggested_reply;
