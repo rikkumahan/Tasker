@@ -63,7 +63,7 @@ export default function TaskDetail({ thread, session, supabase }) {
     setExpanded(false);
     setChecked({});
     setLiveEmails({});
-    setFetchingEmails({});
+    fetchingRef.current = {};
 
     supabase.functions.invoke('api/thread-detail', {
       body: { thread_id: thread.id },
