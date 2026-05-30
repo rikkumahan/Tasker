@@ -185,11 +185,7 @@ export default function TaskDetail({ thread, session, supabase }) {
 
       {/* ── Body ── */}
       <div className="db-detail-body">
-        {detailLoading ? (
-          <div className="db-detail-loading">
-            <span className="db-spinner" /> Loading thread details...
-          </div>
-        ) : detailError ? (
+        {detailError ? (
           <div className="db-detail-error">{detailError}</div>
         ) : activeTab === 'summary' ? (
           <>
@@ -257,7 +253,11 @@ export default function TaskDetail({ thread, session, supabase }) {
           </>
         ) : activeTab === 'email' ? (
           <div className="db-email-tab">
-            {emails.length === 0 ? (
+            {detailLoading ? (
+              <div className="db-detail-loading">
+                <span className="db-spinner" /> Loading emails...
+              </div>
+            ) : emails.length === 0 ? (
               <div className="db-summary-empty">No email content stored yet.</div>
             ) : (
               emails.map((email, idx) => (
@@ -292,7 +292,11 @@ export default function TaskDetail({ thread, session, supabase }) {
         ) : (
           /* Context tab */
           <div className="db-context-tab">
-            {edges.length === 0 ? (
+            {detailLoading ? (
+              <div className="db-detail-loading">
+                <span className="db-spinner" /> Loading graph context...
+              </div>
+            ) : edges.length === 0 ? (
               <div className="db-summary-empty">No context graph data available.</div>
             ) : (
               edges.map((edge, idx) => (
