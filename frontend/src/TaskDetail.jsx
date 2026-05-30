@@ -128,7 +128,7 @@ export default function TaskDetail({ thread, session, supabase }) {
   }
 
   // Merge thread-list data with fully-fetched detail (detail wins)
-  const t          = detail?.thread || thread;
+  const t          = { ...thread, ...(detail?.thread || {}) };
   const actionItems = normaliseItems(t.action_items);
   const emails      = detail?.emails || [];
   const edges       = detail?.context?.edges || [];
@@ -276,7 +276,7 @@ export default function TaskDetail({ thread, session, supabase }) {
                     </span>
                   </div>
                   <div className="db-email-body">
-                    {fetchingEmails[email.id] && !liveEmails[email.id] 
+                    {fetchingRef.current[email.id] && !liveEmails[email.id] 
                       ? <span className="db-spinner" style={{width: 14, height: 14, borderWidth: 1.5}}></span>
                       : (liveEmails[email.id] || email.body || '(no body)')}
                   </div>
