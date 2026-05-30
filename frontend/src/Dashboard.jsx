@@ -144,6 +144,7 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
               session={session}
             />
             <TaskDetail
+              key={selectedThread?.id || 'empty'}
               thread={selectedThread}
               session={session}
               supabase={supabase}

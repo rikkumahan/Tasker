@@ -57,6 +57,7 @@ export default function TaskDetail({ thread, session, supabase }) {
       setDetail(null);
       return; 
     }
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     setActiveTab('summary');
