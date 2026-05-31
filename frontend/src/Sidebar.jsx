@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { RefreshCw, LogOut, Settings, Users, FolderOpen, Brain, CheckSquare, Trash2 } from 'lucide-react';
 
-const NavItem = ({ view, icon, label, badge, activeView, onNavigate }) => (
+const NavItem = ({ view, icon, label, badge, tag, activeView, onNavigate }) => (
   <button
     className={`db-nav-item${activeView === view ? ' db-nav-item-on' : ''}`}
     onClick={() => onNavigate(view)}
@@ -9,6 +9,7 @@ const NavItem = ({ view, icon, label, badge, activeView, onNavigate }) => (
     {icon}
     <span className="db-nav-label">{label}</span>
     {badge > 0 && <span className="db-nav-badge">{badge}</span>}
+    {tag && <span style={{ fontSize: '10px', background: '#3b82f6', color: 'white', padding: '2px 6px', borderRadius: '4px', marginLeft: 'auto', fontWeight: 'bold' }}>{tag}</span>}
   </button>
 );
 
@@ -38,7 +39,7 @@ export default function Sidebar({ activeView, threadCounts, userSettings, syncin
       {/* AI Tools section */}
       <div className="db-nav-section-label">AI Tools</div>
       <nav className="db-nav">
-        <NavItem view="askai" icon={<Brain size={16}/>} label="Ask AI" badge={0} activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="askai" icon={<Brain size={16}/>} label="Ask AI" badge={0} tag="Experimental" activeView={activeView} onNavigate={onNavigate} />
       </nav>
 
       {/* Bottom row: sync + settings + avatar */}
