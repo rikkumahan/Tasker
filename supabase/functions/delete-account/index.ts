@@ -30,16 +30,11 @@ serve(async (req: Request) => {
     // Delete all user data to reset the account, but KEEP the auth.users account.
     // The order matters slightly for foreign keys if they don't have CASCADE, but we'll try to delete in order of leaves to roots.
     
-    // We ignore errors on individual deletes just in case a table is empty or missing
-    await supabaseAdmin.from('user_settings').delete().eq('user_id', uid);
-    await supabaseAdmin.from('sync_queue').delete().eq('user_id', uid);
-    await supabaseAdmin.from('graph_edges').delete().eq('user_id', uid);
-    await supabaseAdmin.from('action_items').delete().eq('user_id', uid);
-    await supabaseAdmin.from('community_reports').delete().eq('user_id', uid);
-    await supabaseAdmin.from('emails').delete().eq('user_id', uid);
-    await supabaseAdmin.from('threads').delete().eq('user_id', uid);
-    await supabaseAdmin.from('contacts').delete().eq('user_id', uid);
-    await supabaseAdmin.from('projects').delete().eq('user_id', uid);
+    // Use the optimized database function to wipe all data in one transaction
+    const { error: wipeError } = await supabase.rpc('wipe_user_data');
+    if (wipeError) {
+      throw new Error(`Failed to wipe user data: ${wipeError.message}`);
+    }
 
     // Finally, completely delete the user identity from auth.users
     const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(uid);
