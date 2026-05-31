@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
-import { Bell, Search, X, SlidersHorizontal } from 'lucide-react';
+import { Bell, Search, X } from 'lucide-react';
 
 // Inline Gmail icon — no external dependency
 const GmailIcon = () => (
@@ -19,9 +19,8 @@ const ACTION_LABEL  = { reply: 'Reply', approve: 'Approve', review: 'Review', jo
 
 const FILTERS = [
   { key: 'all',       label: 'All' },
+  { key: 'important', label: 'Priority' },
   { key: 'action',    label: 'Action' },
-  { key: 'waiting',   label: 'Waiting' },
-  { key: 'important', label: 'Important' },
   { key: 'unread',    label: 'Unread' },
 ];
 
@@ -51,9 +50,8 @@ export default function TaskList({
   // Derived counts from loaded threads (no extra query) — always from raw threads
   const counts = {
     all:       threads.length,
-    action:    threads.filter(t => ['reply','approve','review','join'].includes(t.action_type)).length,
-    waiting:   threads.filter(t => !t.action_type || t.action_type === 'view').length,
     important: threads.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH').length,
+    action:    threads.filter(t => ['reply','approve','review','join'].includes(t.action_type)).length,
     unread:    threads.filter(t => !t.is_read).length,
   };
 
@@ -125,9 +123,6 @@ export default function TaskList({
             )}
           </button>
         ))}
-        <button className="db-filter-more-btn" title="Advanced filters">
-          <SlidersHorizontal size={13} /> Filter
-        </button>
       </div>
 
       {/* Thread rows */}

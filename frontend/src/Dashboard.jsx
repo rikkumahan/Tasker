@@ -61,7 +61,6 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
       if (filter === 'all' && offset === 0) {
         if (!newCache.important) newCache.important = newList.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH');
         if (!newCache.action)   newCache.action   = newList.filter(t => ['reply','approve','review','join'].includes(t.action_type));
-        if (!newCache.waiting)  newCache.waiting  = newList.filter(t => !t.action_type || t.action_type === 'view');
         if (!newCache.unread)   newCache.unread   = newList.filter(t => !t.is_read);
       }
       
@@ -158,22 +157,11 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
   const renderContent = () => {
     switch (activeView) {
       case 'people':
-      case 'personal':
         return <PeopleView supabase={supabase} session={session} />;
       case 'projects':
         return <ProjectsView supabase={supabase} session={session} />;
       case 'askai':
-      case 'search':
         return <AskAIView supabase={supabase} session={session} />;
-      case 'integrations':
-        return (
-          <div className="db-detail-col db-detail-empty">
-            <div className="db-detail-empty-icon">🔌</div>
-            <div className="db-detail-empty-title">Integrations coming soon</div>
-          </div>
-        );
-      case 'tasks':
-      case 'inbox':
       default:
         return (
           <>
@@ -192,7 +180,6 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
               thread={selectedThread}
               session={session}
               supabase={supabase}
-              onBack={() => setSelectedThread(null)}
             />
           </>
         );
