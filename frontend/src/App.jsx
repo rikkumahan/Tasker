@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import Auth from './Auth';
 import Dashboard from './Dashboard';
-import LandingPage from './LandingPage';
 import './index.css';
 
 // ── Supabase client (singleton) ──
@@ -231,9 +230,7 @@ export default function App() {
   }
 
   if (!session) {
-    return showAuth
-      ? <Auth supabase={supabase} />
-      : <LandingPage onStartLogin={() => setShowAuth(true)} />;
+    return <Auth supabase={supabase} />;
   }
 
   return (
