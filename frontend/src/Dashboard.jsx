@@ -190,7 +190,7 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
     if (!window.confirm('Are you sure you want to completely delete your account and all data? This cannot be undone.')) return;
     try {
       await supabase.functions.invoke('delete-account');
-      window.location.reload();
+      onSignOut();
     } catch (e) {
       console.error('[Dashboard] delete account error:', e);
       alert('Failed to delete account.');

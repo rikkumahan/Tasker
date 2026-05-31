@@ -41,6 +41,12 @@ serve(async (req: Request) => {
     await supabaseAdmin.from('contacts').delete().eq('user_id', uid);
     await supabaseAdmin.from('projects').delete().eq('user_id', uid);
 
+    // Finally, completely delete the user identity from auth.users
+    const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(uid);
+    if (deleteError) {
+      throw new Error(`Failed to delete auth user: ${deleteError.message}`);
+    }
+
     return new Response(
       JSON.stringify({ success: true }),
       { headers: { ...getCorsHeaders(), "Content-Type": "application/json" } }
