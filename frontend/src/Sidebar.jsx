@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { RefreshCw, LogOut, Users, FolderOpen, Brain, CheckSquare, Trash2, ChevronUp } from 'lucide-react';
+import { RefreshCw, LogOut, FolderOpen, Brain, CheckSquare, Trash2, ChevronUp, Inbox, User, Search, Plug, Settings } from 'lucide-react';
 
 const NavItem = ({ view, icon, label, badge, tag, activeView, onNavigate }) => (
   <button
@@ -31,15 +31,29 @@ export default function Sidebar({ activeView, threadCounts, userSettings, syncin
 
       {/* Main nav */}
       <nav className="db-nav">
-        <NavItem view="tasks"    icon={<CheckSquare size={16}/>} label="Tasks"    badge={threadCounts.inbox} activeView={activeView} onNavigate={onNavigate} />
-        <NavItem view="people"   icon={<Users size={16}/>}       label="People"   badge={0}                  activeView={activeView} onNavigate={onNavigate} />
-        <NavItem view="projects" icon={<FolderOpen size={16}/>}  label="Projects" badge={0}                  activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="tasks"    icon={<CheckSquare size={16}/>} label="Priority" badge={threadCounts.priority} activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="inbox"    icon={<Inbox size={16}/>}       label="Inbox"    badge={threadCounts.inbox}    activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="projects" icon={<FolderOpen size={16}/>}  label="Projects" badge={0}                    activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="personal" icon={<User size={16}/>}        label="Personal" badge={0}                    activeView={activeView} onNavigate={onNavigate} />
       </nav>
 
       {/* AI Tools section */}
       <div className="db-nav-section-label">AI Tools</div>
       <nav className="db-nav">
-        <NavItem view="askai" icon={<Brain size={16}/>} label="Ask AI" badge={0} tag="Experimental" activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="askai"  icon={<Brain size={16}/>}  label="Ask AI" badge={0} tag="Experimental" activeView={activeView} onNavigate={onNavigate} />
+        <NavItem view="search" icon={<Search size={16}/>} label="Search" badge={0}                    activeView={activeView} onNavigate={onNavigate} />
+      </nav>
+
+      {/* Pushes bottom section down */}
+      <div style={{ flex: 1 }} />
+
+      {/* Bottom utility nav */}
+      <nav className="db-nav" style={{ marginBottom: '0.25rem' }}>
+        <NavItem view="integrations" icon={<Plug size={16}/>} label="Integrations" badge={0} activeView={activeView} onNavigate={onNavigate} />
+        <button className="db-nav-item" onClick={() => setSettingsOpen(o => !o)}>
+          <Settings size={16}/>
+          <span className="db-nav-label">Settings</span>
+        </button>
       </nav>
 
       {/* Profile card */}

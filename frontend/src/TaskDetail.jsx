@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ExternalLink, Copy, Check } from 'lucide-react';
+import { ExternalLink, Copy, Check, ArrowLeft, Clock, CheckCircle, Archive, MoreHorizontal, Paperclip, Smile } from 'lucide-react';
 
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
@@ -37,9 +37,9 @@ function normaliseItems(raw) {
   });
 }
 
-const TABS = ['summary', 'email', 'context'];
+const TABS = ['summary', 'email', 'context', 'activity'];
 
-export default function TaskDetail({ thread, session, supabase }) {
+export default function TaskDetail({ thread, session, supabase, onBack }) {
   const [detail, setDetail]               = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError]     = useState(null);
@@ -48,6 +48,7 @@ export default function TaskDetail({ thread, session, supabase }) {
   const [copied, setCopied]               = useState(false);
   const [checked, setChecked]             = useState({});
   const [liveEmails, setLiveEmails]       = useState({});
+  const [replyDraft, setReplyDraft]       = useState('');
   // Use a ref for in-flight guard so it doesn't retrigger the fetch effect
   const fetchingRef = useRef({});
 
@@ -136,6 +137,19 @@ export default function TaskDetail({ thread, session, supabase }) {
 
   return (
     <div className="db-detail-col">
+      {/* ── Topbar: Back + action icons ── */}
+      <div className="db-detail-topbar">
+        <button className="db-back-btn" onClick={onBack}>
+          <ArrowLeft size={15} /> Back
+        </button>
+        <div className="db-detail-header-actions">
+          <button className="db-detail-action-icon" title="Snooze"><Clock size={15} /></button>
+          <button className="db-detail-action-icon" title="Mark done"><CheckCircle size={15} /></button>
+          <button className="db-detail-action-icon" title="Archive"><Archive size={15} /></button>
+          <button className="db-detail-action-icon" title="More options"><MoreHorizontal size={15} /></button>
+        </div>
+      </div>
+
       {/* ── Header ── */}
       <div className="db-detail-header">
         <div className="db-detail-title-row">
@@ -290,6 +304,8 @@ export default function TaskDetail({ thread, session, supabase }) {
               </a>
             )}
           </div>
+        ) : activeTab === 'activity' ? (
+          <div className="db-summary-empty">No activity recorded yet.</div>
         ) : (
           /* Context tab */
           <div className="db-context-tab">
@@ -381,6 +397,24 @@ export default function TaskDetail({ thread, session, supabase }) {
             )}
           </div>
         )}
+      </div>
+
+      {/* ── Reply Compose ── */}
+      <div className="db-reply-compose">
+        <input
+          className="db-reply-input"
+          type="text"
+          placeholder={`Reply to ${t.sender_name || 'sender'}...`}
+          value={replyDraft}
+          onChange={e => setReplyDraft(e.target.value)}
+        />
+        <div className="db-reply-compose-bar">
+          <div className="db-compose-icons">
+            <button className="db-compose-icon-btn" title="Attach file"><Paperclip size={14} /></button>
+            <button className="db-compose-icon-btn" title="Add emoji"><Smile size={14} /></button>
+          </div>
+          <button className="db-send-btn" disabled={!replyDraft.trim()}>Send</button>
+        </div>
       </div>
     </div>
   );
