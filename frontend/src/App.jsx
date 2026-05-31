@@ -462,7 +462,22 @@ export default function App() {
                   {queue_position > 0 && (
                     <p className="wz-queue-note">{queue_position} user{queue_position > 1 ? 's' : ''} ahead of you in queue</p>
                   )}
-                  <p className="wz-close-note">You can close this tab — we'll continue in the background.</p>
+                  <p className="wz-close-note" style={{ marginBottom: '1.5rem' }}>You can close this tab — we'll continue in the background.</p>
+                  <div className="wz-nav" style={{ justifyContent: 'center' }}>
+                    <button
+                      className="wz-next-btn"
+                      style={{ background: '#f1f5f9', color: '#475569' }}
+                      onClick={() => {
+                        if (onboardingPollRef.current) {
+                          clearInterval(onboardingPollRef.current);
+                          onboardingPollRef.current = null;
+                        }
+                        setWizardStep(null);
+                      }}
+                    >
+                      Skip to Dashboard
+                    </button>
+                  </div>
                 </div>
               );
             })()}

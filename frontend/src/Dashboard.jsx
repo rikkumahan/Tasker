@@ -186,6 +186,22 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
     }
   };
 
+  const handleDeleteAccount = async () => {
+    if (!window.confirm('Are you sure you want to completely delete your account and all data? This cannot be undone.')) return;
+    try {
+      await supabase.functions.invoke('delete-account', {
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      onSignOut();
+    } catch (e) {
+      console.error('[Dashboard] delete account error:', e);
+      alert('Failed to delete account.');
+    }
+  };
+
   return (
     <div className="db-shell">
       <Sidebar
@@ -197,6 +213,7 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
         onNavigate={(view) => { setActiveView(view); setSelectedThread(null); }}
         onSync={handleManualSync}
         onSignOut={onSignOut}
+        onDeleteAccount={handleDeleteAccount}
       />
       <div className="db-main">
         {renderContent()}

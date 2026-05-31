@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { RefreshCw, LogOut, Settings, Users, FolderOpen, Brain, CheckSquare } from 'lucide-react';
+import { RefreshCw, LogOut, Settings, Users, FolderOpen, Brain, CheckSquare, Trash2 } from 'lucide-react';
 
 const NavItem = ({ view, icon, label, badge, activeView, onNavigate }) => (
   <button
@@ -12,7 +12,7 @@ const NavItem = ({ view, icon, label, badge, activeView, onNavigate }) => (
   </button>
 );
 
-export default function Sidebar({ activeView, threadCounts, userSettings, syncing, session, onNavigate, onSync, onSignOut }) {
+export default function Sidebar({ activeView, threadCounts, userSettings, syncing, session, onNavigate, onSync, onSignOut, onDeleteAccount }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const fullName = session?.user?.user_metadata?.full_name || '';
@@ -80,6 +80,14 @@ export default function Sidebar({ activeView, threadCounts, userSettings, syncin
                   onClick={() => { setSettingsOpen(false); onSignOut(); }}
                 >
                   <LogOut size={14} style={{ marginRight: '8px' }} /> Sign Out
+                </button>
+
+                <button
+                  className="db-signout-btn"
+                  onClick={() => { setSettingsOpen(false); onDeleteAccount(); }}
+                  style={{ color: '#ef4444', marginTop: '4px' }}
+                >
+                  <Trash2 size={14} style={{ marginRight: '8px' }} /> Delete Account
                 </button>
               </div>
             </>
