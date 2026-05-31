@@ -2,7 +2,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders } from "../_shared/cors.ts";
 import { decodeBody, sleep, cleanEmailBody, isSpamOrAd, isWorthProcessing, processInBatches } from "../_shared/utils.ts";
 import { refreshGmailToken } from "../_shared/oauth.ts";
-import { GraphRAGStore, getEmbedding, ContextualTaskExtractor } from "../_shared/graph.ts";
+import { GraphRAGStore, getEmbedding } from "../_shared/graph.ts";
+import { ActionContextBuilder, ActionExtractor, ActionReconciler } from "../_shared/actions.ts";
 
 // ─────────────────────────────────────────────
 // Constants — Groq free-tier aware
@@ -362,6 +363,9 @@ Deno.serve(async (req: Request) => {
     let tokenRefreshed = false;
 
     const graphStore = new GraphRAGStore(supabaseAdmin);
+    const actionContextBuilder = new ActionContextBuilder(supabaseAdmin);
+    const actionExtractor = new ActionExtractor();
+    const actionReconciler = new ActionReconciler(supabaseAdmin);
 
     // Update onboarding_status to 'processing'
     if (isOnboarding) {
@@ -449,59 +453,106 @@ Deno.serve(async (req: Request) => {
             return;
           }
 
-          // ── LAYER 3: Message ID dedup check ──
-          // Gmail message IDs are globally unique — a simple existence check is
-          // faster, cheaper, and more correct than the previous vector similarity
-          // approach which ran an AI embedding model + 3 DB queries per email.
+          // Layer 3: per-user, per-message dedupe. New replies in an existing
+          // Gmail thread still need graph ingestion and action reconciliation.
+          const gmailMessageIds = messages.map((m: any) => m.id).filter(Boolean);
+          let existingIds = new Set<string>();
           try {
-            const { data: existingMsg } = await supabaseAdmin
-              .from("emails")
-              .select("id")
-              .eq("message_id", firstMsg.id)
-              .maybeSingle();
-
-            if (existingMsg) {
-              threadsSkippedDedup++;
-              consecutiveSkips++;
-              asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_DEDUP", { thread_id: threadId, subject });
-              return;
+            if (gmailMessageIds.length > 0) {
+              const { data: existingMsgs } = await supabaseAdmin
+                .from("emails")
+                .select("message_id")
+                .eq("user_id", user.id)
+                .in("message_id", gmailMessageIds);
+              existingIds = new Set((existingMsgs || []).map((m: any) => m.message_id));
             }
           } catch (e: any) {
-            // Dedup errors are non-fatal — proceed to ingestion
             console.warn("[DEDUP] Error during message_id check:", e.message);
           }
-          consecutiveSkips = 0; // reset on successful pass-through
 
-          // ── INGEST TO GRAPH (Phase 3: Zero-Retention) ──
-          const extractionResult = await graphStore.ingestEmailToGraph({
-            message_id: firstMsg.id,
-            subject,
-            body: combinedBody,
-            sender,
-            thread_id: threadId,
-            received_at: dateStr ? new Date(dateStr).toISOString() : new Date().toISOString(),
-          }, user.id);
+          const newMessages = messages.filter((m: any) => m.id && !existingIds.has(m.id));
+          if (newMessages.length === 0) {
+            threadsSkippedDedup++;
+            consecutiveSkips++;
+            asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_DEDUP", { thread_id: threadId, subject, checked_messages: gmailMessageIds.length });
+            return;
+          }
+          consecutiveSkips = 0;
 
-          // ── LIVE WEBHOOK TASK EXTRACTION (SRP Fixed) ──
-          // We only call the LLM to extract UI Tasks if it's a live webhook.
-          if (!isOnboarding && extractionResult) {
-            const { entities, relationships } = extractionResult;
-            const taskExtractor = new ContextualTaskExtractor();
-            const contextString = `Entities: ${JSON.stringify(entities.map((e: any)=>e.name))}\nRelationships: ${JSON.stringify(relationships.map((r: any)=>`${r.source} ${r.relationType} ${r.target}`))}`;
-            
-            const extractedTasks = await taskExtractor.extractTasks(combinedBody, subject, contextString);
+          const ingestionResults: any[] = [];
+          const deltaBodies: string[] = [];
+          let latestSenderEmail = "";
 
-            // Instantly update the threads table for the Dashboard API
-            if (extractedTasks) {
+          for (const msg of newMessages) {
+            const msgHeaders = (msg.payload?.headers || []).reduce((acc: any, h: any) => ({ ...acc, [h.name]: h.value }), {});
+            const msgSubject = msgHeaders["Subject"] || subject;
+            const msgSender = msgHeaders["From"] || sender;
+            const msgDate = msgHeaders["Date"] || dateStr;
+            const msgBody = cleanEmailBody(decodeBody(msg.payload) || "").substring(0, 10000);
+            const msgDirection = (msg.labelIds || []).includes("SENT") ? "sent" : "inbox";
+            const msgEmailMatch = msgSender.match(/^(.*?)\s*<([^>]+)>/);
+            latestSenderEmail = msgEmailMatch
+              ? msgEmailMatch[2].trim().toLowerCase()
+              : (msgSender.includes("@") ? msgSender.trim().toLowerCase() : latestSenderEmail);
+            if (msgBody) deltaBodies.push(msgBody);
+
+            const result = await graphStore.ingestEmailToGraph({
+              message_id: msg.id,
+              subject: msgSubject,
+              body: msgBody || combinedBody,
+              sender: msgSender,
+              thread_id: threadId,
+              received_at: msgDate ? new Date(msgDate).toISOString() : new Date().toISOString(),
+              direction: msgDirection,
+            }, user.id, isOnboarding);
+            ingestionResults.push(result);
+          }
+
+          const latestIngestion = [...ingestionResults].reverse().find((r: any) => r?.threadId && r?.emailId);
+          if (!latestIngestion?.threadId || !latestIngestion?.emailId) {
+            asyncLog(supabaseAdmin, user.id, "GRAPH_INGEST_NO_IDS", { thread_id: threadId, new_messages: newMessages.length });
+            threadsProcessed++;
+            return;
+          }
+
+          if (!isOnboarding) {
+            const actionBody = (deltaBodies.join("\n\n---\n\n") || combinedBody).substring(0, 10000);
+            const actionEmbedding = await getEmbedding(`${subject} ${actionBody.substring(0, 1000)}`);
+            const contextPack = await actionContextBuilder.build({
+              userId: user.id,
+              threadId: latestIngestion.threadId,
+              gmailThreadId: threadId,
+              senderEmail: latestSenderEmail,
+              emailEmbedding: actionEmbedding,
+            });
+
+            const extractedActions = await actionExtractor.extract(actionBody, subject, contextPack);
+            if (extractedActions) {
+              const reconciliation = await actionReconciler.reconcile({
+                userId: user.id,
+                threadId: latestIngestion.threadId,
+                emailId: latestIngestion.emailId,
+                gmailThreadId: threadId,
+                candidates: extractedActions.action_items || [],
+                contextPack,
+              });
+
               const { error: updateErr } = await supabaseAdmin.from("threads").update({
-                urgency: extractedTasks.urgency,
-                action_type: extractedTasks.action_type,
-                ai_summary: extractedTasks.ai_summary,
-                action_items: extractedTasks.action_items,
-                suggested_reply: extractedTasks.suggested_reply
-              }).eq("gmail_thread_id", threadId).eq("user_id", user.id);
-              
-              if (updateErr) console.warn(`Failed to update thread tasks for ${threadId}:`, updateErr.message);
+                ai_summary: extractedActions.ai_summary || null,
+                suggested_reply: extractedActions.suggested_reply || null,
+              }).eq("id", latestIngestion.threadId).eq("user_id", user.id);
+
+              if (updateErr) console.warn(`Failed to update thread summary for ${threadId}:`, updateErr.message);
+              asyncLog(supabaseAdmin, user.id, "ACTIONS_RECONCILED", {
+                thread_id: threadId,
+                new_messages: newMessages.length,
+                results: reconciliation,
+              });
+            } else {
+              await supabaseAdmin.rpc("refresh_thread_action_projection", {
+                p_user_id: user.id,
+                p_thread_id: latestIngestion.threadId,
+              });
             }
           }
 
@@ -544,7 +595,7 @@ Deno.serve(async (req: Request) => {
       
       // ALWAYS mark onboarding as complete after the first batch is processed.
       // Remaining historical pages will continue syncing in the background via the background_worker,
-      // and new tasks will magically pop into the user's dashboard via Realtime.
+      // and new action projections will appear in the dashboard as live mail arrives.
       if (isOnboarding) {
         finalUpdate.onboarding_status = "complete";
         finalUpdate.onboarding_progress = {
