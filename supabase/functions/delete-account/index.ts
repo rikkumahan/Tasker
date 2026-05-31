@@ -11,14 +11,12 @@ serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) throw new Error("Missing Authorization header");
     
-    // Create client with service_role key to allow admin operations (like deleting users)
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
       { auth: { autoRefreshToken: false, persistSession: false } }
     );
 
-    // Get the user ID from the JWT
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_ANON_KEY") ?? "",
@@ -27,16 +25,21 @@ serve(async (req: Request) => {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) throw new Error("Unauthorized");
 
-    // We first delete the user from auth.users using the admin api.
-    // If cascading deletes are set up correctly on the database, this is all we need.
-    const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(user.id);
-    if (deleteError) {
-      throw new Error(`Failed to delete user: ${deleteError.message}`);
-    }
+    const uid = user.id;
 
-    // Optional: we could explicitly delete rows here if cascading is not set up,
-    // e.g. delete from user_settings, threads, action_items, etc.
-    // But typically auth.users cascade deletes everything if foreign keys are set to ON DELETE CASCADE.
+    // Delete all user data to reset the account, but KEEP the auth.users account.
+    // The order matters slightly for foreign keys if they don't have CASCADE, but we'll try to delete in order of leaves to roots.
+    
+    // We ignore errors on individual deletes just in case a table is empty or missing
+    await supabaseAdmin.from('user_settings').delete().eq('user_id', uid);
+    await supabaseAdmin.from('sync_queue').delete().eq('user_id', uid);
+    await supabaseAdmin.from('graph_edges').delete().eq('user_id', uid);
+    await supabaseAdmin.from('action_items').delete().eq('user_id', uid);
+    await supabaseAdmin.from('community_reports').delete().eq('user_id', uid);
+    await supabaseAdmin.from('emails').delete().eq('user_id', uid);
+    await supabaseAdmin.from('threads').delete().eq('user_id', uid);
+    await supabaseAdmin.from('contacts').delete().eq('user_id', uid);
+    await supabaseAdmin.from('projects').delete().eq('user_id', uid);
 
     return new Response(
       JSON.stringify({ success: true }),
