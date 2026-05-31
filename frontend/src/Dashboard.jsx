@@ -189,12 +189,7 @@ export default function Dashboard({ session, supabase, wizardStep, onSignOut }) 
   const handleDeleteAccount = async () => {
     if (!window.confirm('Are you sure you want to completely delete your account and all data? This cannot be undone.')) return;
     try {
-      await supabase.functions.invoke('delete-account', {
-        headers: {
-          apikey: SUPABASE_KEY,
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
+      await supabase.functions.invoke('delete-account');
       onSignOut();
     } catch (e) {
       console.error('[Dashboard] delete account error:', e);
