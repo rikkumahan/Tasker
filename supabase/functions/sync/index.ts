@@ -41,6 +41,36 @@ function asyncLog(supabaseAdmin: any, userId: string, event: string, data: any) 
   fireAndForget(p);
 }
 
+async function registerGmailWatch(gmailToken: string, supabaseAdmin: any, userId: string) {
+  const projectId = Deno.env.get("GOOGLE_CLOUD_PROJECT_ID");
+  if (!projectId) {
+    asyncLog(supabaseAdmin, userId, "GMAIL_WATCH_SKIPPED", { reason: "missing_google_cloud_project_id" });
+    return;
+  }
+
+  const watchRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      labelIds: ["INBOX"],
+      topicName: `projects/${projectId}/topics/tasker-gmail-push`,
+    }),
+  });
+  const watchBody = await watchRes.text();
+
+  if (!watchRes.ok) {
+    asyncLog(supabaseAdmin, userId, "GMAIL_WATCH_FAILED", {
+      status: watchRes.status,
+      body: watchBody.substring(0, 500),
+    });
+    return;
+  }
+
+  asyncLog(supabaseAdmin, userId, "GMAIL_WATCH_REGISTERED", {
+    response: watchBody ? JSON.parse(watchBody) : null,
+  });
+}
+
 // ─────────────────────────────────────────────
 // Build Gmail query from sync_flags
 // ─────────────────────────────────────────────
@@ -170,7 +200,7 @@ Deno.serve(async (req: Request) => {
       const syncFlags = reqBody.sync_flags || {};
       settings = {
         user_id: user.id,
-        gmail_email: user.email,
+        gmail_email: String(user.email || "").trim().toLowerCase(),
         gmail_token: { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || null },
         last_synced_at: null,
         sync_flags: syncFlags,
@@ -183,14 +213,11 @@ Deno.serve(async (req: Request) => {
       settings = inserted;
       asyncLog(supabaseAdmin, user.id, "USER_BOOTSTRAPPED", { sync_flags: syncFlags });
 
-      // Register Gmail Watch
       try {
-        await fetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${reqBody.providerToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ labelIds: ["INBOX"], topicName: `projects/${Deno.env.get("GOOGLE_CLOUD_PROJECT_ID")}/topics/tasker-gmail-push` })
-        });
-      } catch (e: any) { console.warn("Gmail watch error:", e.message); }
+        await registerGmailWatch(reqBody.providerToken, supabaseAdmin, user.id);
+      } catch (e: any) {
+        console.warn("Gmail watch error:", e.message);
+      }
     } else if (reqBody.providerToken) {
       // Returning user — refresh stored OAuth tokens with freshly issued ones from the sign-in
       await supabaseAdmin.from("user_settings").update({
@@ -198,6 +225,11 @@ Deno.serve(async (req: Request) => {
       }).eq("user_id", user.id);
       settings.gmail_token = { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || settings.gmail_token?.refresh_token || null };
       asyncLog(supabaseAdmin, user.id, "GMAIL_TOKEN_REFRESHED", { source: "providerToken_in_request" });
+      try {
+        await registerGmailWatch(reqBody.providerToken, supabaseAdmin, user.id);
+      } catch (e: any) {
+        console.warn("Gmail watch refresh error:", e.message);
+      }
     }
 
     // ── Update sync_flags if passed (wizard completion) ──
@@ -447,7 +479,7 @@ Deno.serve(async (req: Request) => {
           }
 
           // ── LAYER 2: Trivial content guard (free) ──
-          if (!isWorthProcessing(combinedBody)) {
+          if (!isWorthProcessing(combinedBody, subject)) {
             threadsSkippedTrivial++;
             asyncLog(supabaseAdmin, user.id, "THREAD_SKIP_TRIVIAL", { thread_id: threadId, subject });
             return;
@@ -572,6 +604,10 @@ Deno.serve(async (req: Request) => {
 
         } catch (err: any) {
           console.error(`[GraphRAG] Thread ${threadId} ingestion failed:`, err.message);
+          asyncLog(supabaseAdmin, user.id, "THREAD_PROCESS_FAILED", {
+            thread_id: threadId,
+            error: err.message,
+          });
           // Non-fatal — continue to next thread
         }
       });

@@ -149,12 +149,25 @@ async function handleThreadDetail(c: any) {
     .eq('user_id', user.id)
     .or(`source_id.eq.${thread_id},target_id.eq.${thread_id}`);
 
+  // Fetch the LLM context pack from the first action item in this thread (if any)
+  const { data: actions } = await supabase
+    .from('action_items')
+    .select('evidence')
+    .eq('thread_id', thread_id)
+    .not('evidence', 'is', null)
+    .limit(1);
+    
+  const contextPack = actions?.[0]?.evidence?.context_pack || null;
+
   const gmailUrl = `https://mail.google.com/mail/u/0/#all/${thread.gmail_thread_id}`;
 
   return c.json({
     thread: { ...thread, gmail_url: gmailUrl },
     emails: formattedEmails,
-    context: { edges: edges || [] }
+    context: { 
+      edges: edges || [],
+      pack: contextPack 
+    }
   });
 }
 app.post('/thread-detail', handleThreadDetail);

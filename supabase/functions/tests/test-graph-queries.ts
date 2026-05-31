@@ -158,7 +158,7 @@ synthesized RESPONSE WITH CITATIONS:`;
     method: "POST",
     headers: { "Authorization": `Bearer ${groqApiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "meta-llama/llama-3.3-70b-specdec",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
       messages: [{ role: "user", content: prompt }],
       temperature: 0.2
     })

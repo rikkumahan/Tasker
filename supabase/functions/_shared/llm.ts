@@ -15,7 +15,7 @@ const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
  */
 export async function callLLM(prompt: string, options: LLMOptions = {}): Promise<string> {
   const {
-    model = "llama-3.1-8b-instant",
+    model = "meta-llama/llama-4-scout-17b-16e-instruct",
     temperature = 0.2,
     maxAttempts = 3,
     jsonFormat = false,

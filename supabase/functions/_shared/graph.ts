@@ -102,7 +102,7 @@ ${redactedText}
 
 OUTPUT:`;
 
-    const responseText = await callLLM(prompt, { model: "meta-llama/llama-3.1-8b-instant", temperature: 0.1 });
+    const responseText = await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.1 });
     
     const parsed = parseTriplets(responseText);
     const entities = parsed.filter(t => t.type === 'entity') as EntityTriplet[];
@@ -562,7 +562,7 @@ ${relationsText}
 
 OUTPUT:`;
 
-    const responseText = await callLLM(prompt, { model: "meta-llama/llama-3.3-70b-specdec", temperature: 0.2, jsonFormat: true });
+    const responseText = await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.2, jsonFormat: true });
 
     if (responseText) {
       try {

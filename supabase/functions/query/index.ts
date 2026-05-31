@@ -98,7 +98,7 @@ Findings: ${JSON.stringify(report.findings)}
 
 RESPONSE:`;
 
-    return await callLLM(prompt, { model: "meta-llama/llama-3.1-8b-instant", temperature: 0.1 });
+    return await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.1 });
   });
 
   const mapResults = await Promise.all(mapPromises);
@@ -125,7 +125,7 @@ ${activeSummaries.join("\n\n---\n\n")}
 
 CONSOLIDATED RESPONSE:`;
 
-  let answer = await callLLM(reducePrompt, { model: "meta-llama/llama-3.3-70b-specdec", temperature: 0.3 });
+  let answer = await callLLM(reducePrompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.3 });
 
   if (!answer) {
     answer = "Failed to synthesize a consolidated response. Please try again.";
@@ -233,7 +233,7 @@ ${subgraphText}
 
 synthesized RESPONSE WITH CITATIONS:`;
 
-  let answer = await callLLM(prompt, { model: "meta-llama/llama-3.3-70b-specdec", temperature: 0.2 });
+  let answer = await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.2 });
 
   if (!answer) {
     answer = "Failed to synthesize a local response. Please try again.";

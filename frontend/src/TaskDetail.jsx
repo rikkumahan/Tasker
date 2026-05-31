@@ -295,17 +295,89 @@ export default function TaskDetail({ thread, session, supabase }) {
           <div className="db-context-tab">
             {detailLoading ? (
               <div className="db-detail-loading">
-                <span className="db-spinner" /> Loading graph context...
+                <span className="db-spinner" /> Loading context...
               </div>
-            ) : edges.length === 0 ? (
-              <div className="db-summary-empty">No context graph data available.</div>
+            ) : (!detail?.context?.pack && edges.length === 0) ? (
+              <div className="db-summary-empty">No context data available.</div>
             ) : (
-              edges.map((edge, idx) => (
-                <div key={idx} className="db-edge-row">
-                  <span className="db-edge-type">{edge.relationship_type}</span>
-                  <span className="db-edge-desc">{edge.description}</span>
-                </div>
-              ))
+              <>
+                {/* 1. Thread Context */}
+                {detail?.context?.pack?.thread_context?.length > 0 && (
+                  <div className="db-detail-section">
+                    <div className="db-detail-section-title">🧵 Thread History</div>
+                    {detail.context.pack.thread_context.map((msg, idx) => (
+                      <div key={`tc-${idx}`} className="db-context-item">
+                        <div className="db-context-item-top">
+                          <span className="db-context-item-sender">{msg.sender_name || msg.sender_email || 'Unknown'}</span>
+                          <span className="db-context-item-time">{timeAgo(msg.received_at)}</span>
+                        </div>
+                        <div className="db-context-item-body">{msg.snippet || '(No snippet)'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {/* 2. Sender Profile */}
+                {detail?.context?.pack?.sender_context?.length > 0 && (
+                  <div className="db-detail-section">
+                    <div className="db-detail-section-title">👤 Sender History</div>
+                    {detail.context.pack.sender_context.map((msg, idx) => (
+                      <div key={`sc-${idx}`} className="db-context-item">
+                        <div className="db-context-item-top">
+                          <span className="db-context-item-sender">{msg.subject || '(No subject)'}</span>
+                          <span className="db-context-item-time">{timeAgo(msg.received_at)}</span>
+                        </div>
+                        <div className="db-context-item-body">{msg.snippet || '(No snippet)'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {/* 3. Similar Emails */}
+                {detail?.context?.pack?.similar_emails?.length > 0 && (
+                  <div className="db-detail-section">
+                    <div className="db-detail-section-title">📧 Similar Emails</div>
+                    {detail.context.pack.similar_emails.map((msg, idx) => (
+                      <div key={`se-${idx}`} className="db-context-item">
+                        <div className="db-context-item-top">
+                          <span className="db-context-item-sender">{msg.subject || '(No subject)'}</span>
+                          <span className="db-context-item-badge">{msg.similarity ? Math.round(msg.similarity * 100) + '% match' : ''}</span>
+                        </div>
+                        <div className="db-context-item-body">{msg.snippet || '(No snippet)'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {/* 4. Similar Actions */}
+                {detail?.context?.pack?.similar_actions?.length > 0 && (
+                  <div className="db-detail-section">
+                    <div className="db-detail-section-title">✅ Related Open Tasks</div>
+                    {detail.context.pack.similar_actions.map((act, idx) => (
+                      <div key={`sa-${idx}`} className="db-context-item">
+                        <div className="db-context-item-top">
+                          <span className="db-context-item-sender">{act.task || act.description}</span>
+                          <span className="db-context-item-badge">{act.similarity ? Math.round(act.similarity * 100) + '% match' : ''}</span>
+                        </div>
+                        <div className="db-context-item-body">Assigned to: {act.assignee || act.assigned_to || 'Unassigned'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 5. Graph Edges (Existing) */}
+                {edges.length > 0 && (
+                  <div className="db-detail-section">
+                    <div className="db-detail-section-title">🕸 Graph Relationships</div>
+                    {edges.map((edge, idx) => (
+                      <div key={`edge-${idx}`} className="db-edge-row">
+                        <span className="db-edge-type">{edge.relationship_type}</span>
+                        <span className="db-edge-desc">{edge.description}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

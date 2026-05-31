@@ -31,7 +31,7 @@ export interface ExtractedActionPayload {
   action_items?: ActionCandidate[];
 }
 
-const ACTION_MODEL = "llama-3.1-8b-instant";
+const ACTION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const compactRows = (rows: unknown[], limit = 8) => Array.isArray(rows) ? rows.slice(0, limit) : [];
 
@@ -115,7 +115,7 @@ export class ActionContextBuilder {
 export class ActionExtractor {
   async extract(emailBody: string, emailSubject: string, contextPack: unknown): Promise<ExtractedActionPayload | null> {
     const redactedText = prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
-    const contextJson = JSON.stringify(contextPack, null, 2).slice(0, 12000);
+    const contextJson = JSON.stringify(contextPack, null, 2).slice(0, 6000);
 
     const prompt = `You are an AI executive assistant inside a production email intelligence system.
 Use the email and the retrieved evidence pack to produce action candidates.
@@ -213,7 +213,7 @@ export class ActionReconciler {
         email_id: params.emailId,
         model_operation: operation,
         candidate_evidence: candidate.evidence ?? null,
-        context_pack: contextPack,
+        context_pack: params.contextPack,
       };
 
       if (operation === "duplicate") {
