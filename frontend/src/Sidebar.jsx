@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { RefreshCw, LogOut, Settings, Users, FolderOpen, Brain, CheckSquare, Trash2 } from 'lucide-react';
+import { RefreshCw, LogOut, Users, FolderOpen, Brain, CheckSquare, Trash2, ChevronUp } from 'lucide-react';
 
 const NavItem = ({ view, icon, label, badge, tag, activeView, onNavigate }) => (
   <button
@@ -42,12 +42,23 @@ export default function Sidebar({ activeView, threadCounts, userSettings, syncin
         <NavItem view="askai" icon={<Brain size={16}/>} label="Ask AI" badge={0} tag="Experimental" activeView={activeView} onNavigate={onNavigate} />
       </nav>
 
-      {/* Bottom row: sync + settings + avatar */}
+      {/* Profile card */}
       <div className="db-sidebar-bottom">
-        <div className="db-settings-wrap">
-          <button className="db-settings-btn" onClick={() => setSettingsOpen(o => !o)} title="Settings">
-            <Settings size={15} />
-          </button>
+        <div className="db-settings-wrap" style={{ width: '100%' }}>
+          <div className="db-profile-card" onClick={() => setSettingsOpen(o => !o)}>
+            <div className="db-avatar db-avatar-lg">{initials}</div>
+            <div className="db-profile-info">
+              <div className="db-profile-name">
+                {fullName || session?.user?.email?.split('@')?.[0] || 'User'}
+              </div>
+              <div className="db-profile-email">{session?.user?.email || ''}</div>
+            </div>
+            <ChevronUp
+              size={14}
+              className="db-profile-chevron"
+              style={{ transform: settingsOpen ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
+            />
+          </div>
 
           {settingsOpen && (
             <>
@@ -64,13 +75,12 @@ export default function Sidebar({ activeView, threadCounts, userSettings, syncin
                     })}
                   </div>
                 )}
-                
-                {/* Fallback Sync for SDLC Resiliency */}
+
                 <button
                   className="db-signout-btn"
                   onClick={onSync}
                   disabled={syncing}
-                  style={{ borderBottom: '1px solid #333', marginBottom: '8px' }}
+                  style={{ borderBottom: '1px solid #f3f4f6', marginBottom: '8px' }}
                 >
                   <RefreshCw size={14} style={{ marginRight: '8px' }} />
                   {syncing ? 'Syncing...' : 'Force Sync'}
@@ -94,8 +104,6 @@ export default function Sidebar({ activeView, threadCounts, userSettings, syncin
             </>
           )}
         </div>
-
-        <div className="db-avatar" title={session?.user?.email}>{initials}</div>
       </div>
     </aside>
   );
