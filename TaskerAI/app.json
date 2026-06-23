@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "TaskerAI",
+    "slug": "TaskerAI",
+    "version": "1.0.0",
+    "scheme": "taskerai",
+    "orientation": "portrait",
+    "backgroundColor": "#F8FAFC",
+    "plugins": [
+      "expo-router"
+    ],
+    "web": {
+      "headTags": [
+        {
+          "tag": "link",
+          "attrs": { "rel": "preconnect", "href": "https://fonts.googleapis.com" }
+        },
+        {
+          "tag": "link",
+          "attrs": { "rel": "preconnect", "href": "https://fonts.gstatic.com", "crossorigin": true }
+        },
+        {
+          "tag": "link",
+          "attrs": {
+            "rel": "stylesheet",
+            "href": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+          }
+        }
+      ]
+    }
+  }
+}
