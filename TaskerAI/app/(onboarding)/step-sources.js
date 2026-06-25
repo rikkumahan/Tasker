@@ -55,7 +55,9 @@ export default function StepSources() {
     setSyncing(true);
     await handleWizardComplete();
     setSyncing(false);
-    if (!errorMessage) router.replace('/(onboarding)/progress');
+    // Navigation is handled by _layout.web.js which watches wizardStep.
+    // When handleWizardComplete sets wizardStep = 'progress', the guard redirects automatically.
+    // Do NOT call router.replace here — it creates a double-navigation race.
   };
 
   return (

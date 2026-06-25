@@ -7,22 +7,26 @@ import { UnifiedPageHeader } from '../../components/UnifiedPageHeader';
 import { T } from '../../components/Theme';
 import { PRIORITIES } from '../../components/mockData';
 import { IconSparkle } from '../../components/Icons';
+import useAuthStore from '../../store/authStore';
 
 const dateString = new Date().toLocaleDateString('en-US', {
   weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
 });
 
-const TodayActions = () => (
-  <>
-    <TouchableOpacity style={s.syncBtn} activeOpacity={0.75}>
-      <Text style={s.syncText}>Sync</Text>
-    </TouchableOpacity>
-    <TouchableOpacity style={s.briefBtn} activeOpacity={0.85}>
-      <IconSparkle size={13} color="white" />
-      <Text style={s.briefText}>Brief me</Text>
-    </TouchableOpacity>
-  </>
-);
+const TodayActions = () => {
+  const signOut = useAuthStore((s) => s.signOut);
+  return (
+    <>
+      <TouchableOpacity style={s.syncBtn} activeOpacity={0.75} onPress={signOut}>
+        <Text style={s.syncText}>Sign Out</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={s.briefBtn} activeOpacity={0.85}>
+        <IconSparkle size={13} color="white" />
+        <Text style={s.briefText}>Brief me</Text>
+      </TouchableOpacity>
+    </>
+  );
+};
 
 export default function TodayScreen() {
   const [selectedId, setSelectedId] = useState(null);

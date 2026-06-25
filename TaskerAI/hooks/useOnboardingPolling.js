@@ -8,8 +8,9 @@ export default function useOnboardingPolling() {
   const _clearPoll = useAuthStore((s) => s._clearPoll);
 
   useEffect(() => {
-    if (wizardStep !== 'progress' || !session) return;
-    _startPoll(session);
+    // The store starts the poll via bootstrapUser/handleWizardComplete.
+    // This hook's only job is to clear the interval when the screen unmounts.
+    if (wizardStep !== 'progress') return;
     return () => _clearPoll();
-  }, [wizardStep, session]);
+  }, [wizardStep]);
 }

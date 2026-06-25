@@ -10,6 +10,7 @@ import {
 import { useRouter, usePathname } from 'expo-router';
 import { T } from '../Theme';
 import { NAV_ITEMS } from '../../constants/navItems';
+import useAuthStore from '../../store/authStore';
 
 // ── Logo Mark — Dot Grid T (SVG via inline approach for web) ─────────────────
 const DotGridT = () => (
@@ -76,11 +77,19 @@ const NavItem = ({ item, isActive }) => {
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 export default function Sidebar() {
   const pathname = usePathname();
+  const session = useAuthStore((s) => s.session);
+  const signOut = useAuthStore((s) => s.signOut);
 
   const isActive = useCallback((item) => {
     if (item.name === 'index') return pathname === '/' || pathname === '';
     return pathname.startsWith('/' + item.name);
   }, [pathname]);
+
+  const userEmail = session?.user?.email || 'me@taskerai.app';
+  const fullName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')?.[0] || 'User';
+  const initials = fullName
+    ? fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+    : (userEmail?.[0] || '?').toUpperCase();
 
   return (
     <View style={s.sidebar}>
@@ -102,16 +111,19 @@ export default function Sidebar() {
         ))}
       </View>
 
-      {/* ── Bottom User Zone ── */}
-      <View style={s.userZone}>
+      {/* ── Bottom User Zone (Clickable to Sign Out) ── */}
+      <Pressable
+        onPress={signOut}
+        style={({ pressed }) => [s.userZone, pressed && { opacity: 0.7 }]}
+      >
         <View style={s.avatar}>
-          <Text style={s.avatarText}>R</Text>
+          <Text style={s.avatarText}>{initials}</Text>
         </View>
         <View style={s.userInfo}>
-          <Text style={s.userName}>Rikku</Text>
-          <Text style={s.userEmail}>me@taskerai.app</Text>
+          <Text style={s.userName}>{fullName}</Text>
+          <Text style={s.userEmail}>Sign Out ({userEmail})</Text>
         </View>
-      </View>
+      </Pressable>
     </View>
   );
 }

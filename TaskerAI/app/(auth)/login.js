@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase';
 import { BRAND } from '../../lib/brand';
 import { T } from '../../components/Theme';
 import ServiceCard from '../../components/onboarding/ServiceCard';
+import useAuthStore from '../../store/authStore';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -25,12 +26,32 @@ export default function LoginScreen() {
     setLoading(true);
     setError(null);
     try {
-      const redirectUri = AuthSession.makeRedirectUri({ scheme: 'taskerai' });
+      // Web platform: standard redirect (page navigates away and back)
+      if (Platform.OS === 'web') {
+        const { error: oauthError } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: window.location.origin + '/',
+            scopes: 'https://www.googleapis.com/auth/gmail.readonly',
+            queryParams: { access_type: 'offline', prompt: 'consent' },
+          },
+        });
+        if (oauthError) throw oauthError;
+        return; // Page redirects
+      }
+
+      // Mobile: Supabase refuses to redirect to exp:// schemes, so we route through
+      // an Edge Function bridge (valid HTTPS) which HTTP-redirects back to exp://.
+      // openAuthSessionAsync() intercepts the exp:// navigation and returns it to us.
+      const expRedirectUri = AuthSession.makeRedirectUri({ path: 'auth-callback' });
+
+      // Derive Bridge URL dynamically from the Supabase environment URL
+      const BRIDGE = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/mobile-auth-bridge/redirect?exp=${encodeURIComponent(expRedirectUri)}`;
 
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: redirectUri,
+          redirectTo: BRIDGE,
           scopes: 'https://www.googleapis.com/auth/gmail.readonly',
           queryParams: { access_type: 'offline', prompt: 'consent' },
           skipBrowserRedirect: true,
@@ -39,19 +60,15 @@ export default function LoginScreen() {
 
       if (oauthError || !data?.url) throw oauthError || new Error('No OAuth URL');
 
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri);
-
-      if (result.type === 'success') {
-        const url = new URL(result.url);
-        const params = new URLSearchParams(url.hash.slice(1));
-        const accessToken = params.get('access_token');
-        const refreshToken = params.get('refresh_token');
-
-        if (accessToken) {
-          await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken || '' });
-        }
+      // ponytail: auth-callback.js handles the redirected deep link asynchronously.
+      const result = await WebBrowser.openAuthSessionAsync(data.url, expRedirectUri);
+      if (result.type === 'success' && result.url) {
+        console.log('[DEBUG LOGIN] openAuthSessionAsync succeeded with URL:', result.url);
+        const handleOAuthCallback = useAuthStore.getState().handleOAuthCallback;
+        await handleOAuthCallback(result.url);
       }
     } catch (e) {
+      console.error('[DEBUG LOGIN] handleGoogleLogin error:', e);
       setError('Sign-in failed. Please try again.');
     } finally {
       setLoading(false);

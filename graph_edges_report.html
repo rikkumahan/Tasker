@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph Edges Report</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 2.5rem 1.5rem;
+    }
+
+    .container { max-width: 820px; margin: 0 auto; }
+
+    /* Header */
+    header { margin-bottom: 2.5rem; }
+    header h1 { font-size: 1.75rem; font-weight: 700; color: #f8fafc; letter-spacing: -0.02em; }
+    header p  { margin-top: .4rem; font-size: .875rem; color: #64748b; }
+
+    /* Summary cards */
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2.5rem; }
+    .card {
+      background: #1e2130;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+    }
+    .card .label { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: #64748b; }
+    .card .value { font-size: 2rem; font-weight: 700; color: #818cf8; margin-top: .3rem; }
+
+    /* Section title */
+    .section-title {
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: #475569;
+      margin-bottom: 1rem;
+    }
+
+    /* Bar chart */
+    .chart { background: #1e2130; border: 1px solid #2d3148; border-radius: 10px; padding: 1.5rem; margin-bottom: 2.5rem; }
+    .bar-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.1rem; }
+    .bar-row:last-child { margin-bottom: 0; }
+    .bar-label { width: 220px; flex-shrink: 0; font-size: .85rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-wrap { flex: 1; background: #131625; border-radius: 6px; height: 28px; overflow: hidden; }
+    .bar-fill {
+      height: 100%;
+      border-radius: 6px;
+      background: linear-gradient(90deg, #6366f1, #818cf8);
+      display: flex; align-items: center; justify-content: flex-end;
+      padding-right: .6rem;
+      font-size: .8rem; font-weight: 600; color: #fff;
+      transition: width .6s ease;
+      min-width: 36px;
+    }
+
+    /* Table */
+    .table-wrap { background: #1e2130; border: 1px solid #2d3148; border-radius: 10px; overflow: hidden; margin-bottom: 2.5rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    thead tr { background: #131625; }
+    th {
+      padding: .75rem 1rem;
+      text-align: left;
+      font-size: .75rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #475569;
+      font-weight: 600;
+    }
+    td { padding: .85rem 1rem; border-top: 1px solid #1a1f35; color: #cbd5e1; }
+    tr:hover td { background: #252a42; }
+    .rank { font-weight: 700; color: #818cf8; }
+    .pct { color: #64748b; }
+    .badge {
+      display: inline-block;
+      background: #312e81;
+      color: #a5b4fc;
+      border-radius: 4px;
+      padding: .15rem .55rem;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+
+    footer { text-align: center; font-size: .75rem; color: #334155; padding-top: 1rem; border-top: 1px solid #1e2130; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Graph Edges Report</h1>
+    <p>Generated 2026-06-03 &mdash; Tasker / <code>graph_edges</code> table</p>
+  </header>
+
+  <!-- Summary cards -->
+  <div class="cards">
+    <div class="card">
+      <div class="label">Total Edges</div>
+      <div class="value">170</div>
+    </div>
+    <div class="card">
+      <div class="label">Users</div>
+      <div class="value">3</div>
+    </div>
+    <div class="card">
+      <div class="label">Relationship Types</div>
+      <div class="value">1</div>
+    </div>
+  </div>
+
+  <!-- Bar chart -->
+  <p class="section-title">Edges per user</p>
+  <div class="chart">
+    <div class="bar-row">
+      <div class="bar-label" title="veera.c@mechispike.com">veera.c@mechispike.com</div>
+      <div class="bar-wrap">
+        <div class="bar-fill" style="width: 100%">147</div>
+      </div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label" title="rikkumahan07@gmail.com">rikkumahan07@gmail.com</div>
+      <div class="bar-wrap">
+        <div class="bar-fill" style="width: 8.8%">13</div>
+      </div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label" title="rikkumahan20@gmail.com">rikkumahan20@gmail.com</div>
+      <div class="bar-wrap">
+        <div class="bar-fill" style="width: 6.8%">10</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail table -->
+  <p class="section-title">Breakdown</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Email</th>
+          <th>Edges</th>
+          <th>% of Total</th>
+          <th>Relationship</th>
+          <th>Source → Target</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="rank">1</td>
+          <td>veera.c@mechispike.com</td>
+          <td><strong>147</strong></td>
+          <td class="pct">86.5%</td>
+          <td><span class="badge">SENT_BY</span></td>
+          <td>thread → contact</td>
+        </tr>
+        <tr>
+          <td class="rank">2</td>
+          <td>rikkumahan07@gmail.com</td>
+          <td><strong>13</strong></td>
+          <td class="pct">7.6%</td>
+          <td><span class="badge">SENT_BY</span></td>
+          <td>thread → contact</td>
+        </tr>
+        <tr>
+          <td class="rank">3</td>
+          <td>rikkumahan20@gmail.com</td>
+          <td><strong>10</strong></td>
+          <td class="pct">5.9%</td>
+          <td><span class="badge">SENT_BY</span></td>
+          <td>thread → contact</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>Tasker &mdash; graph_edges &mdash; 2026-06-03</footer>
+</div>
+</body>
+</html>
