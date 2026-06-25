@@ -45,7 +45,6 @@ export async function getEmbedding(text: string): Promise<number[]> {
     return new Array(384).fill(0);
   }
 }
-
 export function parseTriplets(text: string): (EntityTriplet | RelationshipTriplet)[] {
   const results: (EntityTriplet | RelationshipTriplet)[] = [];
   const matches = text.match(/\((?:[^)]|\)[^#])*\)/g) || [];
@@ -103,7 +102,7 @@ ${redactedText}
 
 OUTPUT:`;
 
-    const responseText = await callLLM(prompt, { model: "meta-llama/llama-3.1-8b-instant", temperature: 0.1 });
+    const responseText = await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.1 });
     
     const parsed = parseTriplets(responseText);
     const entities = parsed.filter(t => t.type === 'entity') as EntityTriplet[];
@@ -112,7 +111,6 @@ OUTPUT:`;
     return { entities, relationships };
   }
 }
-
 interface LouvainEdge {
   source: string;
   target: string;
@@ -170,6 +168,7 @@ export function runLouvain(nodes: string[], edges: LouvainEdge[]): Record<string
         const commWeights = new Map<number, number>();
         
         for (const [neighbor, weight] of adj[i].entries()) {
+          if (neighbor === i) continue; // Self-loops move with the node
           const c = communities[neighbor];
           if (c === oldComm) k_i_out += weight;
           else commWeights.set(c, (commWeights.get(c) || 0) + weight);
@@ -209,6 +208,7 @@ export function runLouvain(nodes: string[], edges: LouvainEdge[]): Record<string
     for (let u = 0; u < N; u++) {
       const commU = commToNewIdx.get(communities[u])!;
       for (const [v, weight] of adj[u].entries()) {
+        if (u > v) continue; // Prevent double-counting undirected edges
         const commV = commToNewIdx.get(communities[v])!;
         const [lo, hi] = commU <= commV ? [commU, commV] : [commV, commU];
         const key = `${lo}||${hi}`;
@@ -263,18 +263,18 @@ export class GraphRAGStore {
     this.supabase = supabaseClient;
   }
   
-  async resolveContact(name: string, email: string, organization?: string): Promise<string> {
+  async resolveContact(userId: string, name: string, email: string, organization?: string): Promise<string> {
     const normName = name.trim().toUpperCase();
     const cleanEmail = email.trim().toLowerCase();
     
-    const { data: byEmail } = await this.supabase.from("contacts").select("id, name, bio_summary").eq("email", cleanEmail).maybeSingle();
+    const { data: byEmail } = await this.supabase.from("contacts").select("id, name, bio_summary").eq("user_id", userId).eq("email", cleanEmail).maybeSingle();
     if (byEmail) return byEmail.id;
     
-    const { data: byName } = await this.supabase.from("contacts").select("id, email, bio_summary").ilike("name", normName).limit(1);
+    const { data: byName } = await this.supabase.from("contacts").select("id, email, bio_summary").eq("user_id", userId).ilike("name", normName).limit(1);
     if (byName && byName.length > 0) return byName[0].id;
     
     const embedding = await getEmbedding(`${normName} ${organization || ""}`);
-    const { data: matched } = await this.supabase.rpc("match_contacts", { query_embedding: embedding, match_threshold: 0.85, match_count: 1 });
+    const { data: matched } = await this.supabase.rpc("match_contacts", { p_user_id: userId, query_embedding: embedding, match_threshold: 0.85, match_count: 1 });
     
     if (matched && matched.length > 0) {
       const canon = matched[0];
@@ -283,7 +283,7 @@ export class GraphRAGStore {
         : `Name alias: ${name} (${organization || "None"})`;
       const newEmbedding = await getEmbedding(`${canon.name} ${newBio}`);
       
-      await this.supabase.from("contacts").update({ bio_summary: newBio, embedding: newEmbedding }).eq("id", canon.id);
+      await this.supabase.from("contacts").update({ bio_summary: newBio, embedding: newEmbedding }).eq("id", canon.id).eq("user_id", userId);
       return canon.id;
     }
     
@@ -292,45 +292,57 @@ export class GraphRAGStore {
     
     const { data: inserted, error: insErr } = await this.supabase
       .from("contacts")
-      .insert({ email: cleanEmail || null, name, organization: organization || null, bio_summary: bio, embedding: contactEmbedding })
+      .insert({ user_id: userId, email: cleanEmail || null, name, organization: organization || null, bio_summary: bio, embedding: contactEmbedding })
       .select("id")
       .single();
       
     if (insErr) {
       if (cleanEmail) {
-        const { data: fallback } = await this.supabase.from("contacts").select("id").eq("email", cleanEmail).maybeSingle();
+        const { data: fallback } = await this.supabase.from("contacts").select("id").eq("user_id", userId).eq("email", cleanEmail).maybeSingle();
         if (fallback?.id) return fallback.id;
       }
-      const { data: fallbackByName } = await this.supabase.from("contacts").select("id").ilike("name", name).limit(1);
+      const { data: fallbackByName } = await this.supabase.from("contacts").select("id").eq("user_id", userId).ilike("name", name).limit(1);
       if (fallbackByName?.[0]?.id) return fallbackByName[0].id;
       throw new Error(`resolveContact: insert failed for "${name}": ${insErr.message}`);
     }
     return inserted.id;
   }
   
-  async resolveProject(name: string, description?: string): Promise<string> {
+  async resolveProject(userId: string, name: string, description?: string): Promise<string> {
     const normName = name.trim().toUpperCase();
-    const { data: existing } = await this.supabase.from("projects").select("id").ilike("name", normName).limit(1);
+    const { data: existing } = await this.supabase.from("projects").select("id").eq("user_id", userId).ilike("name", normName).limit(1);
     if (existing && existing.length > 0) return existing[0].id;
     
     const { data: inserted, error } = await this.supabase
       .from("projects")
-      .insert({ name: name.trim(), description: description || `Focus area: ${name}` })
+      .insert({ user_id: userId, name: name.trim(), description: description || `Focus area: ${name}` })
       .select("id")
       .single();
       
     if (error) {
-      const { data: fallback } = await this.supabase.from("projects").select("id").eq("name", name.trim()).maybeSingle();
+      const { data: fallback } = await this.supabase.from("projects").select("id").eq("user_id", userId).eq("name", name.trim()).maybeSingle();
       if (fallback?.id) return fallback.id;
       throw new Error(`resolveProject: insert failed for "${name}": ${error.message}`);
     }
     return inserted.id;
   }
   
-  async writeEdge(sourceId: string, targetId: string, sourceType: string, targetType: string, relType: string, description: string) {
-    await this.supabase.from("graph_edges").insert({
-      source_id: sourceId, target_id: targetId, source_type: sourceType, target_type: targetType, relationship_type: relType, description
+  async writeEdge(userId: string, sourceId: string, targetId: string, sourceType: string, targetType: string, relType: string, description: string) {
+    const { error } = await this.supabase.from("graph_edges").upsert({
+      user_id: userId,
+      source_id: sourceId,
+      target_id: targetId,
+      source_type: sourceType,
+      target_type: targetType,
+      relationship_type: relType,
+      description,
+    }, {
+      onConflict: "user_id,source_id,target_id,source_type,target_type,relationship_type",
     });
+
+    if (error) {
+      throw new Error(`writeEdge: upsert failed for ${sourceType}->${targetType}: ${error.message}`);
+    }
   }
 
   async ingestEmailToGraph(raw: any, userId: string, is_historical: boolean = false) {
@@ -353,6 +365,7 @@ export class GraphRAGStore {
     const { entities, relationships } = await extractor.extractFromEmail(normBody, normSubject);
 
     const senderEmbedding = await getEmbedding(`${senderName} ${senderEmail}`);
+    const emailEmbedding = await getEmbedding(`${normSubject} ${normBody.substring(0, 1000)}`);
     const entityEmbeddings: number[][] = [];
     for (const ent of entities) {
       entityEmbeddings.push(await getEmbedding(`${ent.name} ${ent.description || ""}`.trim()));
@@ -375,6 +388,10 @@ export class GraphRAGStore {
         body: null, // Zero-Retention: discard raw body
         snippet: normBody.substring(0, 100), // Only save a short preview
         received_at: raw.received_at || new Date().toISOString(),
+        direction: raw.direction || "unknown",
+        embedding: isValidVec(emailEmbedding) ? emailEmbedding : null,
+      },
+      sender: {
         embedding: isValidVec(senderEmbedding) ? senderEmbedding : null,
       },
       entities: entities.map((ent, i) => ({
@@ -392,10 +409,17 @@ export class GraphRAGStore {
       })),
     };
 
-    const { error } = await this.supabase.rpc("ingest_graphrag_payload", { payload });
+    const { data, error } = await this.supabase.rpc("ingest_graphrag_payload", { payload });
     if (error) console.error(`[GraphRAG] ingest_graphrag_payload failed for ${raw.message_id}:`, error.message);
 
-    return { entities, relationships };
+    return {
+      entities,
+      relationships,
+      threadId: data?.thread_id || null,
+      emailId: data?.email_id || null,
+      senderId: data?.sender_id || null,
+      isHistorical: is_historical,
+    };
   }
 
   async buildCommunities(userId: string) {
@@ -462,10 +486,10 @@ export class GraphRAGStore {
   }
 
   private async _processCommunityReport(userId: string, memberIds: string[], edges: any[]) {
-    const { data: contacts } = await this.supabase.from("contacts").select("id, name, organization").in("id", memberIds);
-    const { data: projects } = await this.supabase.from("projects").select("id, name").in("id", memberIds);
-    const { data: threads } = await this.supabase.from("threads").select("id, subject").in("id", memberIds);
-    const { data: tasks } = await this.supabase.from("tasks").select("id, title").in("id", memberIds);
+    const { data: contacts } = await this.supabase.from("contacts").select("id, name, organization").eq("user_id", userId).in("id", memberIds);
+    const { data: projects } = await this.supabase.from("projects").select("id, name").eq("user_id", userId).in("id", memberIds);
+    const { data: threads } = await this.supabase.from("threads").select("id, subject").eq("user_id", userId).in("id", memberIds);
+    const { data: actionItems } = await this.supabase.from("action_items").select("id, description").eq("user_id", userId).in("id", memberIds);
     
     const memberNames: string[] = [];
     const memberDetailsMap = new Map<string, { type: string; name: string }>();
@@ -473,7 +497,7 @@ export class GraphRAGStore {
     (contacts || []).forEach((c: any) => { memberNames.push(`Contact: ${c.name} (${c.organization || "None"})`); memberDetailsMap.set(c.id, { type: 'contact', name: c.name }); });
     (projects || []).forEach((p: any) => { memberNames.push(`Project: ${p.name}`); memberDetailsMap.set(p.id, { type: 'project', name: p.name }); });
     (threads || []).forEach((t: any) => { memberNames.push(`Email Thread: ${t.subject}`); memberDetailsMap.set(t.id, { type: 'thread', name: t.subject }); });
-    (tasks || []).forEach((t: any) => { memberNames.push(`Task: ${t.title}`); memberDetailsMap.set(t.id, { type: 'task', name: t.title }); });
+    (actionItems || []).forEach((a: any) => { memberNames.push(`Action: ${a.description}`); memberDetailsMap.set(a.id, { type: 'action_item', name: a.description }); });
     
     const internalRelations: string[] = [];
     for (const e of edges) {
@@ -513,13 +537,13 @@ export class GraphRAGStore {
   }
   
   private async _generateReport(membersText: string, relationsText: string) {
-    const prompt = `You are a corporate intelligence analyst. Analyze this cluster of email communications, tasks, projects, and contacts to generate a structured Community Report.
+    const prompt = `You are a corporate intelligence analyst. Analyze this cluster of email communications, action items, projects, and contacts to generate a structured Community Report.
 The output MUST be a valid JSON object matching the JSON schema below. Do not wrap in markdown, code blocks, or include extra text.
 
 JSON Schema:
 {
   "title": "Descriptive title summarizing the cluster (e.g. 'Project Apollo API Overhaul')",
-  "summary": "High-level summary of the active discussions, threads, and tasks in the cluster.",
+  "summary": "High-level summary of the active discussions, threads, and action items in the cluster.",
   "rating": 5.5,
   "rating_explanation": "One-sentence rationale for the urgency score.",
   "findings": [
@@ -538,7 +562,7 @@ ${relationsText}
 
 OUTPUT:`;
 
-    const responseText = await callLLM(prompt, { model: "meta-llama/llama-3.3-70b-specdec", temperature: 0.2, jsonFormat: true });
+    const responseText = await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.2, jsonFormat: true });
 
     if (responseText) {
       try {
@@ -553,53 +577,10 @@ OUTPUT:`;
 
     return {
       title: "Active Communications Cluster",
-      summary: "Dynamic cluster containing email threads, tasks, and project communications.",
+      summary: "Dynamic cluster containing email threads, action items, and project communications.",
       rating: 1.0,
       rating_explanation: "API failure fallback.",
       findings: []
     };
   }
 }
-
-// ─────────────────────────────────────────────
-// CONTEXTUAL TASK EXTRACTOR (Phase 3)
-// ─────────────────────────────────────────────
-const TASK_EXTRACTION_MODEL = "llama-3.1-8b-instant";
-
-export class ContextualTaskExtractor {
-  async extractTasks(emailBody: string, emailSubject: string, contextString: string) {
-    const redactedText = prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
-    
-    const prompt = `You are an AI Executive Assistant. Read this email and use the context to generate structured action items.
-The output MUST be valid JSON. Do not include markdown formatting or extra text.
-
-JSON Schema:
-{
-  "urgency": "LOW" | "MEDIUM" | "HIGH" | "URGENT",
-  "action_type": "view" | "reply" | "review" | "approve" | "join",
-  "ai_summary": "1-2 sentence semantic summary of the email",
-  "action_items": [{"task": "Do X", "assignee": "Bob"}],
-  "suggested_reply": "Draft reply text, or empty string if no reply needed"
-}
-
-EMAIL CONTENT:
-${redactedText}
-
-GRAPH CONTEXT (Entities & Relationships):
-${contextString}
-
-OUTPUT JSON:`;
-
-    const responseText = await callLLM(prompt, { model: TASK_EXTRACTION_MODEL, temperature: 0.1, jsonFormat: true });
-    
-    try {
-      if (!responseText) return null;
-      const parsed = JSON.parse(responseText);
-      return parsed;
-    } catch (e) {
-      console.error("ContextualTaskExtractor JSON parse error:", e);
-      return null;
-    }
-  }
-}
-

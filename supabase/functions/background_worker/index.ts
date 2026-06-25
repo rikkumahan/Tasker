@@ -28,7 +28,10 @@ Deno.serve(async (req: Request) => {
   );
 
   // ── Fail-safe: reset any jobs stuck in 'processing' >5 mins ──
-  await supabaseAdmin.rpc("reset_stuck_queue_jobs");
+  const { error: resetError } = await supabaseAdmin.rpc("reset_stuck_queue_jobs");
+  if (resetError) {
+    console.warn("[background_worker] reset_stuck_queue_jobs failed:", resetError.message);
+  }
 
   const startTime = Date.now();
   let processed = 0;

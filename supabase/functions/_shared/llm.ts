@@ -15,7 +15,7 @@ const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
  */
 export async function callLLM(prompt: string, options: LLMOptions = {}): Promise<string> {
   const {
-    model = "llama-3.1-8b-instant",
+    model = "meta-llama/llama-4-scout-17b-16e-instruct",
     temperature = 0.2,
     maxAttempts = 3,
     jsonFormat = false,
@@ -47,7 +47,25 @@ export async function callLLM(prompt: string, options: LLMOptions = {}): Promise
 
       if (res.status === 429) {
         attempts--;
-        await sleep(1000);
+        if (attempts === 0) {
+          console.error(`[LLM] Rate limit exhausted after ${maxAttempts} attempts.`);
+          break;
+        }
+        
+        // Read Retry-After header (in seconds), fallback to exponential backoff
+        const retryAfterStr = res.headers.get("retry-after");
+        let delayMs = 1000;
+        
+        if (retryAfterStr && !isNaN(parseInt(retryAfterStr, 10))) {
+          delayMs = parseInt(retryAfterStr, 10) * 1000;
+        } else {
+          // Exponential backoff: 2s, 4s, 8s...
+          const attemptNum = maxAttempts - attempts;
+          delayMs = Math.pow(2, attemptNum) * 1000;
+        }
+        
+        console.warn(`[LLM] 429 Rate Limit hit. Backing off for ${delayMs}ms before retry ${maxAttempts - attempts}/${maxAttempts}...`);
+        await sleep(delayMs);
         continue;
       }
 

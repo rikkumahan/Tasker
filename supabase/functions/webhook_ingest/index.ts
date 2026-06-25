@@ -34,7 +34,8 @@ Deno.serve(async (req: Request) => {
 
     // Gmail sends: { emailAddress: "user@gmail.com", historyId: "12345" }
     const { emailAddress, historyId } = notification;
-    if (!emailAddress) return new Response("ok", { status: 200 });
+    const normalizedEmail = String(emailAddress || "").trim().toLowerCase();
+    if (!normalizedEmail) return new Response("ok", { status: 200 });
 
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -45,10 +46,13 @@ Deno.serve(async (req: Request) => {
     const { data: userSettings } = await supabaseAdmin
       .from("user_settings")
       .select("user_id")
-      .eq("gmail_email", emailAddress)
+      .eq("gmail_email", normalizedEmail)
       .single();
 
-    if (!userSettings) return new Response("ok", { status: 200 });
+    if (!userSettings) {
+      console.warn("No user_settings row found for Gmail webhook:", normalizedEmail);
+      return new Response("ok", { status: 200 });
+    }
 
     // ── LAYER 2: Insert into native sync_queue (replaces QStash publish) ──
     //
@@ -64,16 +68,18 @@ Deno.serve(async (req: Request) => {
       if (!isUniqueViolation) {
         console.error("Queue insert error:", queueError.message);
       }
-    } else {
+    }
+
+    supabaseAdmin.functions.invoke("background_worker", { body: {} })
+      .catch((e: any) => console.warn("Worker trigger failed:", e.message));
+
+    if (!queueError) {
       // ── REACTIVE TRIGGER: Wake background_worker immediately ──
       // Fire-and-forget: we do NOT await this — Google's 10s deadline must be met
-      supabaseAdmin.functions.invoke("background_worker", { body: {} })
-        .catch((e: any) => console.warn("Worker trigger failed:", e.message));
-
       await supabaseAdmin.from("debug_logs").insert({
         user_id: userSettings.user_id,
         event: "WEBHOOK_QUEUED",
-        data: { historyId, emailAddress, dedupId }
+        data: { historyId, emailAddress: normalizedEmail, dedupId }
       });
     }
 

@@ -117,8 +117,8 @@ export function isSpamOrAd(subject: string, sender: string, body: string): boole
  * isWorthProcessing — returns false if the cleaned body
  * has fewer than 15 words (trivially short, nothing to extract).
  */
-export function isWorthProcessing(cleanedBody: string): boolean {
-  if (!cleanedBody) return false;
-  const wordCount = cleanedBody.trim().split(/\s+/).filter(w => w.length > 0).length;
-  return wordCount >= 15;
+export function isWorthProcessing(cleanedBody: string, subject = ""): boolean {
+  const content = `${subject}\n${cleanedBody || ""}`.trim();
+  // Let the LLM decide if there's a task, regardless of length.
+  return content.length > 0;
 }

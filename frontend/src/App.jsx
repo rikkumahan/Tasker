@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import Auth from './Auth';
 import Dashboard from './Dashboard';
-import LandingPage from './LandingPage';
 import './index.css';
 
 // ── Supabase client (singleton) ──
@@ -231,9 +230,7 @@ export default function App() {
   }
 
   if (!session) {
-    return showAuth
-      ? <Auth supabase={supabase} />
-      : <LandingPage onStartLogin={() => setShowAuth(true)} />;
+    return <Auth supabase={supabase} />;
   }
 
   return (
@@ -462,7 +459,22 @@ export default function App() {
                   {queue_position > 0 && (
                     <p className="wz-queue-note">{queue_position} user{queue_position > 1 ? 's' : ''} ahead of you in queue</p>
                   )}
-                  <p className="wz-close-note">You can close this tab — we'll continue in the background.</p>
+                  <p className="wz-close-note" style={{ marginBottom: '1.5rem' }}>You can close this tab — we'll continue in the background.</p>
+                  <div className="wz-nav" style={{ justifyContent: 'center' }}>
+                    <button
+                      className="wz-next-btn"
+                      style={{ background: '#f1f5f9', color: '#475569' }}
+                      onClick={() => {
+                        if (onboardingPollRef.current) {
+                          clearInterval(onboardingPollRef.current);
+                          onboardingPollRef.current = null;
+                        }
+                        setWizardStep(null);
+                      }}
+                    >
+                      Skip to Dashboard
+                    </button>
+                  </div>
                 </div>
               );
             })()}

@@ -1,5 +1,6 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
+import { Bell, Search, X } from 'lucide-react';
 
 // Inline Gmail icon — no external dependency
 const GmailIcon = () => (
@@ -39,19 +40,31 @@ export default function TaskList({
   onSelectThread, onFilterChange, onLoadMore, session,
 }) {
   const listRef = useRef(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const firstName =
     session?.user?.user_metadata?.full_name?.split(' ')?.[0] ||
     session?.user?.email?.split('@')?.[0] ||
     'there';
 
-  // Derived counts from loaded threads (no extra query)
+  // Derived counts from loaded threads (no extra query) — always from raw threads
   const counts = {
     all:       threads.length,
     important: threads.filter(t => t.urgency === 'URGENT' || t.urgency === 'HIGH').length,
     action:    threads.filter(t => ['reply','approve','review','join'].includes(t.action_type)).length,
     unread:    threads.filter(t => !t.is_read).length,
   };
+
+  const filteredThreads = searchQuery.trim()
+    ? threads.filter(t => {
+        const q = searchQuery.toLowerCase();
+        return (
+          (t.subject || '').toLowerCase().includes(q) ||
+          (t.sender_name || '').toLowerCase().includes(q) ||
+          (t.sender_email || '').toLowerCase().includes(q)
+        );
+      })
+    : threads;
 
   // Infinite scroll: load more when near bottom
   useEffect(() => {
@@ -70,8 +83,30 @@ export default function TaskList({
     <div className="db-list-col">
       {/* Header */}
       <div className="db-list-header">
-        <h2 className="db-greeting-title">Good morning, {firstName} 👋</h2>
-        <p className="db-greeting-sub">Here's what needs your attention today.</p>
+        <div className="db-list-header-row">
+          <div>
+            <h2 className="db-greeting-title">Hello, {firstName}!</h2>
+            <p className="db-greeting-sub">Here's what needs your attention today.</p>
+          </div>
+          <button className="db-bell-btn" title="Notifications">
+            <Bell size={18} />
+          </button>
+        </div>
+        <div className="db-search-wrap">
+          <Search size={14} className="db-search-icon" />
+          <input
+            className="db-search-input"
+            type="text"
+            placeholder="Search threads..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button className="db-search-clear" onClick={() => setSearchQuery('')}>
+              <X size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter tabs */}
@@ -97,14 +132,24 @@ export default function TaskList({
             <span className="db-spinner" />
             <span>Loading your inbox...</span>
           </div>
-        ) : threads.length === 0 ? (
+        ) : filteredThreads.length === 0 ? (
           <div className="db-empty-state">
-            <div className="db-empty-icon">🎉</div>
-            <div className="db-empty-title">You're all caught up!</div>
-            <div className="db-empty-sub">We'll notify you when something important comes in.</div>
+            {searchQuery ? (
+              <>
+                <div className="db-empty-icon">🔍</div>
+                <div className="db-empty-title">No results for "{searchQuery}"</div>
+                <div className="db-empty-sub">Try a different search term.</div>
+              </>
+            ) : (
+              <>
+                <div className="db-empty-icon">🎉</div>
+                <div className="db-empty-title">You're all caught up!</div>
+                <div className="db-empty-sub">We'll notify you when something important comes in.</div>
+              </>
+            )}
           </div>
         ) : (
-          threads.map(t => (
+          filteredThreads.map(t => (
             <div
               key={t.id}
               className={[

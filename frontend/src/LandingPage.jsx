@@ -19,7 +19,7 @@ import {
 
 const PAGE_AGENT_BASE_URL = import.meta.env.VITE_PAGE_AGENT_BASE_URL || 'https://api.groq.com/openai/v1';
 const PAGE_AGENT_API_KEY = import.meta.env.VITE_PAGE_AGENT_API_KEY || '';
-const PAGE_AGENT_MODEL = import.meta.env.VITE_PAGE_AGENT_MODEL || 'llama-3.3-70b-versatile';
+const PAGE_AGENT_MODEL = import.meta.env.VITE_PAGE_AGENT_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
 
 const demoSteps = [
   {

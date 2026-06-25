@@ -2811,6 +2811,12 @@ body {
 .db-edge-row { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.625rem 0.875rem; background: #f9fafb; border-radius: 6px; font-size: 0.82rem; border: 1px solid #f3f4f6; }
 .db-edge-type { font-weight: 700; color: #1d4ed8; font-size: 0.7rem; letter-spacing: 0.06em; white-space: nowrap; flex-shrink: 0; margin-top: 1px; }
 .db-edge-desc { color: #374151; line-height: 1.5; }
+.db-context-item { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.75rem 0.875rem; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.82rem; }
+.db-context-item-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
+.db-context-item-sender { font-weight: 600; color: #111827; }
+.db-context-item-time { color: #9ca3af; font-size: 0.73rem; flex-shrink: 0; }
+.db-context-item-badge { background: #eff6ff; color: #1d4ed8; font-size: 0.7rem; font-weight: 600; padding: 1px 6px; border-radius: 10px; flex-shrink: 0; }
+.db-context-item-body { color: #6b7280; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 
 /* ── People / Projects views ── */
 .db-secondary-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
@@ -2850,6 +2856,27 @@ body {
 .db-ai-typing span { width: 6px; height: 6px; background: #9ca3af; border-radius: 50%; animation: dbTypingDot 1.2s infinite; }
 .db-ai-typing span:nth-child(2) { animation-delay: 0.2s; }
 .db-ai-typing span:nth-child(3) { animation-delay: 0.4s; }
+
+/* ── Search bar ── */
+.db-list-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; }
+.db-bell-btn { background: transparent; border: none; cursor: pointer; color: #6b7280; padding: 0.375rem; border-radius: 6px; display: flex; align-items: center; flex-shrink: 0; transition: color 0.15s, background 0.15s; margin-top: 0.15rem; }
+.db-bell-btn:hover { color: #111827; background: #f3f4f6; }
+.db-search-wrap { display: flex; align-items: center; gap: 0.5rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.45rem 0.75rem; margin-top: 0.875rem; transition: border-color 0.15s; }
+.db-search-wrap:focus-within { border-color: #2563eb; background: #fff; }
+.db-search-icon { color: #9ca3af; flex-shrink: 0; }
+.db-search-input { flex: 1; background: transparent; border: none; outline: none; font-size: 0.825rem; color: #111827; font-family: inherit; }
+.db-search-input::placeholder { color: #9ca3af; }
+.db-search-clear { background: transparent; border: none; cursor: pointer; color: #9ca3af; padding: 0; display: flex; align-items: center; flex-shrink: 0; }
+.db-search-clear:hover { color: #374151; }
+
+/* ── Profile card ── */
+.db-profile-card { display: flex; align-items: center; gap: 0.625rem; padding: 0.5rem; border-radius: 8px; cursor: pointer; transition: background 0.15s; width: 100%; min-width: 0; }
+.db-profile-card:hover { background: #f3f4f6; }
+.db-avatar-lg { width: 34px !important; height: 34px !important; font-size: 0.78rem !important; }
+.db-profile-info { flex: 1; min-width: 0; }
+.db-profile-name { font-size: 0.82rem; font-weight: 600; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-profile-email { font-size: 0.73rem; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-profile-chevron { color: #9ca3af; flex-shrink: 0; }
 @keyframes dbTypingDot { 0%,80%,100%{ transform:scale(0.7);opacity:0.5; } 40%{ transform:scale(1);opacity:1; } }
 
 /* Landing page */
