@@ -42,45 +42,25 @@ Deno.serve(async (req: Request) => {
       (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? ""
     );
 
-    // Look up user by their stored gmail_email
-    const { data: userSettings } = await supabaseAdmin
-      .from("user_settings")
-      .select("user_id")
-      .eq("gmail_email", normalizedEmail)
-      .single();
+    // Call the database function to handle user lookup, queue insert, logging, and debounce check
+    const { data: shouldTrigger, error: rpcError } = await supabaseAdmin
+      .rpc("ingest_gmail_webhook", {
+        p_email: normalizedEmail,
+        p_history_id: String(historyId)
+      });
 
-    if (!userSettings) {
-      console.warn("No user_settings row found for Gmail webhook:", normalizedEmail);
-      return new Response("ok", { status: 200 });
-    }
-
-    // ── LAYER 2: Insert into native sync_queue (replaces QStash publish) ──
-    //
-    // dedup_id = user_id + historyId → same webhook won't be queued twice
-    const dedupId = `${userSettings.user_id}_${historyId}`;
-    const { error: queueError } = await supabaseAdmin
-      .from("sync_queue")
-      .insert({ user_id: userSettings.user_id, dedup_id: dedupId });
-
-    if (queueError) {
-      // Unique constraint violation (PG code 23505) = already queued → safe to ignore
-      const isUniqueViolation = queueError.code === "23505" || queueError.message.includes("unique") || queueError.message.includes("duplicate");
-      if (!isUniqueViolation) {
-        console.error("Queue insert error:", queueError.message);
-      }
-    }
-
-    supabaseAdmin.functions.invoke("background_worker", { body: {} })
-      .catch((e: any) => console.warn("Worker trigger failed:", e.message));
-
-    if (!queueError) {
+    if (rpcError) {
+      console.error("ingest_gmail_webhook RPC failed:", rpcError.message);
+      // Fallback: trigger worker just in case so tasks don't get stuck
+      supabaseAdmin.functions.invoke("background_worker", { body: {} })
+        .catch((e: any) => console.warn("Worker trigger fallback failed:", e.message));
+    } else if (shouldTrigger) {
       // ── REACTIVE TRIGGER: Wake background_worker immediately ──
       // Fire-and-forget: we do NOT await this — Google's 10s deadline must be met
-      await supabaseAdmin.from("debug_logs").insert({
-        user_id: userSettings.user_id,
-        event: "WEBHOOK_QUEUED",
-        data: { historyId, emailAddress: normalizedEmail, dedupId }
-      });
+      supabaseAdmin.functions.invoke("background_worker", { body: {} })
+        .catch((e: any) => console.warn("Worker trigger failed:", e.message));
+    } else {
+      console.log(`[webhook_ingest] Webhook for ${normalizedEmail} debounced or duplicate.`);
     }
 
     // Critical: Always return 200 so Google doesn't retry

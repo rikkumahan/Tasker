@@ -27,11 +27,7 @@ Deno.serve(async (req: Request) => {
     ((Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? "").trim()
   );
 
-  // ── Fail-safe: reset any jobs stuck in 'processing' >5 mins ──
-  const { error: resetError } = await supabaseAdmin.rpc("reset_stuck_queue_jobs");
-  if (resetError) {
-    console.warn("[background_worker] reset_stuck_queue_jobs failed:", resetError.message);
-  }
+
 
   const startTime = Date.now();
   let processed = 0;
@@ -46,7 +42,7 @@ Deno.serve(async (req: Request) => {
 
     try {
       // Delegate to sync function via direct fetch to avoid supabase-js header quirks
-      const serviceKey = (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? "").trim();
+      const serviceKey = (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim();
       const supabaseUrl = (Deno.env.get("SUPABASE_URL") ?? "").trim();
       const syncRes = await fetch(`${supabaseUrl}/functions/v1/sync`, {
         method: "POST",
