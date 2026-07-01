@@ -90,8 +90,10 @@ const mc = StyleSheet.create({
 
 import { useBreakpoint } from '../hooks/useBreakpoint';
 
-export const DailyBriefHero = () => {
+export const DailyBriefHero = ({ metrics, onRefresh, userName }) => {
   const { isMobile } = useBreakpoint();
+  const currentMetrics = metrics || METRICS;
+  const totalAttention = currentMetrics.find(m => m.label === 'Action Items')?.value || '0';
 
   return (
     <View style={hero.shadowOuter}>
@@ -114,10 +116,10 @@ export const DailyBriefHero = () => {
           <View style={[hero.headerRow, isMobile && hero.headerRowMobile]}>
             <View style={{ flex: 1, paddingRight: 16 }}>
               <Text style={hero.eyebrow}>Daily Brief</Text>
-              <Text style={hero.greeting}>Good morning, Sai.</Text>
-              <Text style={hero.subtitle}>7 items need your attention today.</Text>
+              <Text style={hero.greeting}>Good morning, {userName || 'User'}.</Text>
+              <Text style={hero.subtitle}>{totalAttention} items need your attention today.</Text>
             </View>
-            <TouchableOpacity style={hero.refreshBtn} activeOpacity={0.7}>
+            <TouchableOpacity style={hero.refreshBtn} activeOpacity={0.7} onPress={onRefresh}>
               <IconSparkle size={13} color={T.fg2} />
               <Text style={hero.refreshText}>Refresh</Text>
             </TouchableOpacity>
@@ -125,7 +127,7 @@ export const DailyBriefHero = () => {
 
           {/* Metric cards */}
           <View style={[hero.metricsRow, isMobile && hero.metricsRowMobile]}>
-            {METRICS.map(m => <MetricCard key={m.label} metric={m} isMobile={isMobile} />)}
+            {currentMetrics.map(m => <MetricCard key={m.label} metric={m} isMobile={isMobile} />)}
           </View>
         </View>
       </View>
@@ -255,22 +257,25 @@ const row = StyleSheet.create({
 
 // ─── Top Priorities List ──────────────────────────────────────────────────────
 
-export const TopPriorities = ({ selectedId, onSelect }) => (
-  <View style={lst.wrapper}>
-    <View style={lst.header}>
-      <Text style={lst.title}>Top Priorities</Text>
-      <Text style={lst.count}>{PRIORITIES.length} items</Text>
+export const TopPriorities = ({ selectedId, onSelect, data }) => {
+  const listData = data || PRIORITIES;
+  return (
+    <View style={lst.wrapper}>
+      <View style={lst.header}>
+        <Text style={lst.title}>Top Priorities</Text>
+        <Text style={lst.count}>{listData.length} items</Text>
+      </View>
+      <View style={lst.card}>
+        {listData.map((item, idx) => (
+          <View key={item.id}>
+            <PriorityRow item={item} selected={selectedId === item.id} onPress={onSelect} />
+            {idx < listData.length - 1 && <View style={lst.divider} />}
+          </View>
+        ))}
+      </View>
     </View>
-    <View style={lst.card}>
-      {PRIORITIES.map((item, idx) => (
-        <View key={item.id}>
-          <PriorityRow item={item} selected={selectedId === item.id} onPress={onSelect} />
-          {idx < PRIORITIES.length - 1 && <View style={lst.divider} />}
-        </View>
-      ))}
-    </View>
-  </View>
-);
+  );
+};
 
 // ─── People Waiting List ──────────────────────────────────────────────────────
 
@@ -292,22 +297,25 @@ const WaitingRow = ({ item }) => (
   </View>
 );
 
-export const PeopleWaiting = () => (
-  <View style={wt.wrapper}>
-    <View style={lst.header}>
-      <Text style={lst.title}>People Waiting On You</Text>
-      <Text style={lst.count}>{WAITING.length} people</Text>
+export const PeopleWaiting = ({ data }) => {
+  const listData = data || WAITING;
+  return (
+    <View style={wt.wrapper}>
+      <View style={lst.header}>
+        <Text style={lst.title}>People Waiting On You</Text>
+        <Text style={lst.count}>{listData.length} people</Text>
+      </View>
+      <View style={wt.card}>
+        {listData.map((w, idx) => (
+          <View key={w.id}>
+            <WaitingRow item={w} />
+            {idx < listData.length - 1 && <View style={lst.divider} />}
+          </View>
+        ))}
+      </View>
     </View>
-    <View style={wt.card}>
-      {WAITING.map((w, idx) => (
-        <View key={w.id}>
-          <WaitingRow item={w} />
-          {idx < WAITING.length - 1 && <View style={lst.divider} />}
-        </View>
-      ))}
-    </View>
-  </View>
-);
+  );
+};
 
 const lst = StyleSheet.create({
   wrapper: { marginBottom: T.sp8 },

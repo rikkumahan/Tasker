@@ -43,6 +43,7 @@ export default function ProgressScreen() {
 
   const handleSkip = () => {
     _clearPoll();
+    useAuthStore.setState({ wizardStep: null });
     router.replace('/(tabs)');
   };
 

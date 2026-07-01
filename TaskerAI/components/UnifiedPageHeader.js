@@ -16,10 +16,13 @@
 //   badgeCount   — number?  optional orange pill beside title
 //   rightActions — node?    optional buttons (Sync / Brief Me) on Today tab
 
-import React from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, Platform, TouchableOpacity } from 'react-native';
 import { T } from './Theme';
 import { useBreakpoint } from '../hooks/useBreakpoint';
+import useAuthStore from '../store/authStore';
+import useAppStore from '../store/appStore';
+import ProfileSheet from './ProfileSheet';
 
 // ─── DotGridT — 3×3 dot grid that forms a "T" lettermark ─────────────────────
 // Identical to the web Sidebar's logo mark.
@@ -40,15 +43,15 @@ const DotGridT = () => (
 
 // ─── UserAvatar ───────────────────────────────────────────────────────────────
 
-const UserAvatar = () => (
-  <View style={s.avatar}>
-    <Text style={s.avatarText}>RM</Text>
-  </View>
+const UserAvatar = ({ onPress, initials }) => (
+  <TouchableOpacity style={s.avatar} onPress={onPress} activeOpacity={0.85}>
+    <Text style={s.avatarText}>{initials}</Text>
+  </TouchableOpacity>
 );
 
 // ─── AppRow — logo + wordmark + avatar ───────────────────────────────────────
 
-const AppRow = () => (
+const AppRow = ({ onAvatarPress, initials }) => (
   <View style={s.appRow}>
     <View style={s.brand}>
       <DotGridT />
@@ -56,7 +59,7 @@ const AppRow = () => (
         Tasker<Text style={s.wordmarkAccent}>AI</Text>
       </Text>
     </View>
-    <UserAvatar />
+    <UserAvatar onPress={onAvatarPress} initials={initials} />
   </View>
 );
 
@@ -83,6 +86,18 @@ const PageRow = ({ title, subtitle, badgeCount, rightActions }) => (
 
 export const UnifiedPageHeader = ({ title, subtitle, badgeCount, rightActions }) => {
   const { isMobile } = useBreakpoint();
+  const [profileVisible, setProfileVisible] = useState(false);
+  const session = useAuthStore(s => s.session);
+
+  // Compute initials
+  const initials = (() => {
+    if (!session) return 'RM';
+    const fullName = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'User';
+    const parts = fullName.replace(/['"]/g, '').trim().split(/\s+/);
+    if (parts.length === 0) return 'RM';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  })();
 
   // Web: sidebar already owns branding — render only the page context row.
   if (!isMobile) {
@@ -101,7 +116,7 @@ export const UnifiedPageHeader = ({ title, subtitle, badgeCount, rightActions })
   // Mobile: unified card — branding + divider + page context.
   return (
     <View style={s.card}>
-      <AppRow />
+      <AppRow onAvatarPress={() => setProfileVisible(true)} initials={initials} />
       <View style={s.divider} />
       <PageRow
         title={title}
@@ -109,6 +124,7 @@ export const UnifiedPageHeader = ({ title, subtitle, badgeCount, rightActions })
         badgeCount={badgeCount}
         rightActions={rightActions}
       />
+      <ProfileSheet visible={profileVisible} onClose={() => setProfileVisible(false)} />
     </View>
   );
 };

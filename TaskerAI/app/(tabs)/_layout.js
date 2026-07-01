@@ -1,6 +1,7 @@
 // _layout.js — Tab navigator layout for mobile.
 // Adds MobileHeader above tabs and frosted-glass tab bar background.
 
+import React, { useEffect } from 'react';
 import { Tabs } from 'expo-router';
 import { Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,6 +10,8 @@ import { T } from '../../components/Theme';
 import {
   IconToday, IconTasks, IconWaiting, IconProjects, IconPeople,
 } from '../../components/Icons';
+import useAuthStore from '../../store/authStore';
+import useAppStore from '../../store/appStore';
 
 // Frosted glass tab bar background using expo-blur
 const TabBarBackground = () => {
@@ -30,6 +33,26 @@ const TabBarBackground = () => {
 };
 
 export default function TabLayout() {
+  const session = useAuthStore(s => s.session);
+  const fetchAll = useAppStore(s => s.fetchAll);
+  const initRealtime = useAppStore(s => s.initRealtime);
+  const destroyRealtime = useAppStore(s => s.destroyRealtime);
+
+  // Derive waiting count for badge dynamically from store
+  const waitingCount = useAppStore(s =>
+    s.threads.filter(t => t.action_type === 'reply' && !t.is_read).length
+  );
+
+  useEffect(() => {
+    if (session?.user?.id) {
+      fetchAll();
+      initRealtime(session.user.id);
+    }
+    return () => {
+      destroyRealtime();
+    };
+  }, [session, fetchAll, initRealtime, destroyRealtime]);
+
   return (
     <SafeAreaView style={s.root} edges={['top']}>
       {/* ── Tab Navigator ── */}
@@ -67,7 +90,7 @@ export default function TabLayout() {
           name="waiting"
           options={{
             title: 'Waiting',
-            tabBarBadge: 4,
+            tabBarBadge: waitingCount > 0 ? waitingCount : undefined,
             tabBarIcon: ({ color, size }) => <IconWaiting size={size} color={color} />,
           }}
         />

@@ -29,28 +29,45 @@ export default function RootLayout() {
   // Navigation guard — runs in useEffect, never during render
   // This prevents the "Maximum update depth exceeded" loop that <Redirect> causes
   useEffect(() => {
-    if (isLoading) return;
+    console.log('[RootLayout guard] run. isLoading:', isLoading, 'session:', !!session, 'wizardStep:', wizardStep, 'segments:', segments);
+    if (isLoading) {
+      console.log('[RootLayout guard] isLoading is true, skipping routing.');
+      return;
+    }
 
     const inAuthGroup = segments[0] === '(auth)';
     const inOnboardingGroup = segments[0] === '(onboarding)';
 
+    console.log('[RootLayout guard] session:', !!session, 'wizardStep:', wizardStep, 'segments:', segments.join('/'), 'inAuthGroup:', inAuthGroup, 'inOnboardingGroup:', inOnboardingGroup);
+
     if (!session) {
       // Not signed in → go to login (only if not already there)
-      if (!inAuthGroup) router.replace('/(auth)/login');
+      if (!inAuthGroup) {
+        console.log('[RootLayout guard] Not signed in, redirecting to login');
+        router.replace('/(auth)/login');
+      }
       return;
     }
 
     // Signed in + wizard in progress → go to correct wizard step
     if (wizardStep && ONBOARDING_ROUTES[wizardStep]) {
-      if (!inOnboardingGroup) router.replace(ONBOARDING_ROUTES[wizardStep]);
+      const isOnProgressScreen = segments[0] === '(onboarding)' && segments[1] === 'progress';
+      const needsRedirect = wizardStep === 'progress' ? !isOnProgressScreen : !inOnboardingGroup;
+      if (needsRedirect) {
+        console.log('[RootLayout guard] Redirecting to wizard step:', ONBOARDING_ROUTES[wizardStep]);
+        router.replace(ONBOARDING_ROUTES[wizardStep]);
+      }
       return;
     }
 
     // Signed in + no wizard → go to tabs (only if still on auth/onboarding screens)
     if (inAuthGroup || inOnboardingGroup) {
+      console.log('[RootLayout guard] Signed in + no wizard, redirecting to tabs');
       router.replace('/(tabs)');
+    } else {
+      console.log('[RootLayout guard] Guard complete: user is active and on tabs.');
     }
-  }, [session, isLoading, wizardStep]);
+  }, [session, isLoading, wizardStep, segments]);
 
   // Always render the Stack — navigation happens via useEffect above
   return (

@@ -24,20 +24,40 @@ const useAuthStore = create((set, get) => ({
   _bootstrapTriggered: false,
   _initialSyncDone: false,
   _pollInterval: null,
+  _callbackInProgress: false,
+  _lastProcessedUrl: null,
 
   initAuth: () => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      set({ session, isLoading: false });
-      if (session) get().checkSyncHealth(session);
-    });
+    supabase.auth.getSession()
+      .then(({ data: { session }, error }) => {
+        if (error) {
+          console.warn('[initAuth] getSession returned error:', error);
+          supabase.auth.signOut().catch(() => {});
+          set({ session: null, isLoading: false });
+          return;
+        }
+        if (session) {
+          set({ session, isLoading: true });
+          get().checkSyncHealth(session);
+        } else {
+          set({ session, isLoading: false });
+        }
+      })
+      .catch((err) => {
+        console.error('[initAuth] getSession rejected:', err);
+        supabase.auth.signOut().catch(() => {});
+        set({ session: null, isLoading: false });
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       set({ session });
       // Only bootstrap on a FRESH sign-in that carries a live provider_token.
       // Session restores from AsyncStorage fire SIGNED_IN too, but provider_token is null there.
       const hasProviderToken = session?.provider_token || get().providerToken;
-      if (event === 'SIGNED_IN' && hasProviderToken) {
-        get().bootstrapUser(session);
+      if (event === 'SIGNED_IN') {
+        if (hasProviderToken) {
+          get().bootstrapUser(session);
+        }
       }
       if (event === 'SIGNED_OUT') {
         set({
@@ -48,6 +68,7 @@ const useAuthStore = create((set, get) => ({
           _initialSyncDone: false,
           errorMessage: null,
           wizardFlags: { ...DEFAULT_WIZARD_FLAGS },
+          isLoading: false,
         });
         get()._clearPoll();
       }
@@ -59,11 +80,36 @@ const useAuthStore = create((set, get) => ({
 
   handleOAuthCallback: async (url) => {
     console.log('[DEBUG AUTH] handleOAuthCallback triggered with URL:', url);
-    // Guard: If we already have a session, don't exchange the code again
-    if (get().session) {
-      console.log('[DEBUG AUTH] Session already exists, skipping exchange.');
+    if (get()._lastProcessedUrl === url) {
+      console.log('[DEBUG AUTH] URL already processed, skipping.');
       return;
     }
+    if (get().session) {
+      console.log('[DEBUG AUTH] Session already exists.');
+      if (!get().providerToken) {
+        console.log('[DEBUG AUTH] Extracting provider token from URL...');
+        const params = new URLSearchParams(url.split('#')[1] || url.split('?')[1] || '');
+        const providerToken = params.get('provider_token');
+        const providerRefreshToken = params.get('provider_refresh_token');
+        if (providerToken) {
+          console.log('[DEBUG AUTH] Found provider token in URL, updating store.');
+          set({
+            _lastProcessedUrl: url,
+            providerToken,
+            providerRefreshToken: providerRefreshToken || null,
+          });
+          await get().bootstrapUser(get().session);
+          return;
+        }
+      }
+      console.log('[DEBUG AUTH] Skipping exchange.');
+      return;
+    }
+    if (get()._callbackInProgress) {
+      console.log('[DEBUG AUTH] handleOAuthCallback already in progress, ignoring duplicate call.');
+      return;
+    }
+    set({ _lastProcessedUrl: url, _callbackInProgress: true, isLoading: true });
 
     try {
       if (url.includes('code=')) {
@@ -120,51 +166,79 @@ const useAuthStore = create((set, get) => ({
           }
         } else {
           console.warn('[DEBUG AUTH] No access_token or code found in URL:', url);
+          set({ isLoading: false });
         }
       }
     } catch (e) {
       console.error('[DEBUG AUTH] handleOAuthCallback caught error:', e);
-      set({ errorMessage: 'Authentication failed. Please try signing in again.' });
+      set({ errorMessage: 'Authentication failed. Please try signing in again.', isLoading: false });
+    } finally {
+      set({ _callbackInProgress: false });
     }
   },
 
   bootstrapUser: async (session) => {
+    console.log('[bootstrapUser] started. user_id:', session?.user?.id);
     // Guard: only run once per app lifecycle (not on token refresh)
-    if (get()._bootstrapTriggered) return;
-    set({ _bootstrapTriggered: true });
+    if (get()._bootstrapTriggered) {
+      console.log('[bootstrapUser] already triggered, skipping.');
+      return;
+    }
+    // ponytail: reuse isLoading to suspend routing guard until onboarding query resolves
+    set({ _bootstrapTriggered: true, isLoading: true });
 
     try {
-      const { data: settings } = await supabase
+      console.log('[bootstrapUser] Querying user_settings...');
+      const { data: settings, error } = await supabase
         .from('user_settings')
         .select('onboarding_status')
         .eq('user_id', session.user.id)
         .maybeSingle();
 
+      if (error) {
+        console.error('[bootstrapUser] Query returned database error:', error);
+      }
+      console.log('[bootstrapUser] user_settings query completed. result:', settings);
+
       // Returning user — skip wizard entirely
-      if (settings?.onboarding_status === 'complete') return;
+      if (settings?.onboarding_status === 'complete') {
+        console.log('[bootstrapUser] Onboarding complete. Skipping wizard.');
+        set({ isLoading: false });
+        return;
+      }
 
       // Mid-onboarding — resume progress screen
       if (isInProgress(settings?.onboarding_status)) {
-        set({ wizardStep: 'progress' });
+        console.log('[bootstrapUser] Onboarding in progress. Resume progress screen.');
+        set({ wizardStep: 'progress', isLoading: false });
         get()._startPoll(session);
         return;
       }
 
       // New user — capture token and start wizard
+      console.log('[bootstrapUser] New user detected. Redirecting to lookback...');
+      // Preserve parsed providerToken if not in session
+      const finalProviderToken = session.provider_token || get().providerToken;
+      const finalProviderRefreshToken = session.provider_refresh_token || get().providerRefreshToken;
+      console.log('[bootstrapUser] finalProviderToken:', !!finalProviderToken);
       set({
-        providerToken: session.provider_token,
-        providerRefreshToken: session.provider_refresh_token,
+        providerToken: finalProviderToken,
+        providerRefreshToken: finalProviderRefreshToken,
         wizardStep: 'lookback',
+        isLoading: false,
       });
+      console.log('[bootstrapUser] wizardStep set to lookback in store.');
     } catch (e) {
-      set({ errorMessage: 'Failed to check onboarding status.' });
+      console.error('[bootstrapUser] caught exception:', e);
+      set({ errorMessage: 'Failed to check onboarding status.', isLoading: false });
     }
   },
 
   checkSyncHealth: async (session) => {
     // Guard: only run once per session restore
     if (get()._initialSyncDone) return;
-    set({ _initialSyncDone: true });
+    // ponytail: reuse isLoading to suspend routing guard until onboarding query resolves
+    set({ _initialSyncDone: true, isLoading: true });
 
     try {
       const { data: settings } = await supabase
@@ -174,32 +248,42 @@ const useAuthStore = create((set, get) => ({
         .maybeSingle();
 
       // Completed — skip, never show wizard again
-      if (settings?.onboarding_status === 'complete') return;
+      if (settings?.onboarding_status === 'complete') {
+        set({ isLoading: false });
+        return;
+      }
 
       // Mid-onboarding still in progress — resume polling
       if (isInProgress(settings?.onboarding_status)) {
         if (settings.onboarding_progress) set({ onboardingProgress: settings.onboarding_progress });
-        set({ wizardStep: 'progress' });
+        set({ wizardStep: 'progress', isLoading: false });
         get()._startPoll(session);
         return;
       }
 
       // onboarding_status is null: new user who just signed in via OAuth.
-      // If provider_token is present on the session, start the wizard.
-      // This handles the case where detectSessionInUrl already parsed the token
-      // before bootstrapUser fires (e.g. on web with hash restore).
+      // If provider_token is present on the session or in store, start the wizard.
       if (!settings || settings.onboarding_status === null) {
-        if (session?.provider_token) {
+        const finalProviderToken = session?.provider_token || get().providerToken;
+        if (finalProviderToken) {
           set({
-            providerToken: session.provider_token,
-            providerRefreshToken: session.provider_refresh_token,
+            providerToken: finalProviderToken,
+            providerRefreshToken: session?.provider_refresh_token || get().providerRefreshToken,
             wizardStep: 'lookback',
+            isLoading: false,
           });
+        } else {
+          // No provider token available to complete onboarding — sign out to force re-auth
+          console.warn('[checkSyncHealth] Non-onboarded user restored without providerToken. Signing out.');
+          await get().signOut();
+          set({ isLoading: false });
         }
-        // No provider_token → user needs to do a fresh OAuth sign-in — do nothing.
+      } else {
+        set({ isLoading: false });
       }
     } catch (e) {
-      set({ errorMessage: 'Failed to check sync health.' });
+      console.error('[checkSyncHealth] error:', e);
+      set({ errorMessage: 'Failed to check sync health.', isLoading: false });
     }
   },
 
@@ -243,7 +327,11 @@ const useAuthStore = create((set, get) => ({
 
   signOut: async () => {
     get()._clearPoll();
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('[signOut] error:', e);
+    }
   },
 
   setWizardFlags: (partial) =>

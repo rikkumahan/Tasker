@@ -184,7 +184,7 @@ Deno.serve(async (req: Request) => {
     if (!user) return new Response(JSON.stringify({ error: "Unauthorized (JWT Decode Failed)" }), { status: 401, headers: corsHeaders });
 
     // ── Fetch settings ──
-    const { data: settingsData } = await supabaseAdmin.from("user_settings").select("*").eq("user_id", user.id).single();
+    const { data: settingsData } = await supabaseAdmin.from("user_settings_decrypted").select("*").eq("user_id", user.id).single();
     settings = settingsData;
 
     if (settings?.sync_status === "REVOKED") {
@@ -201,7 +201,6 @@ Deno.serve(async (req: Request) => {
       settings = {
         user_id: user.id,
         gmail_email: String(user.email || "").trim().toLowerCase(),
-        gmail_token: { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || null },
         last_synced_at: null,
         sync_flags: syncFlags,
         onboarding_status: "queued",
@@ -211,6 +210,15 @@ Deno.serve(async (req: Request) => {
       const { data: inserted, error: insertError } = await supabaseAdmin.from("user_settings").insert(settings).select().single();
       if (insertError) throw new Error("Failed to bootstrap user settings: " + insertError.message);
       settings = inserted;
+
+      // Store Gmail token in Vault via RPC
+      const { error: vaultError } = await supabaseAdmin.rpc("vault_store_gmail_token", {
+        p_user_id: user.id,
+        p_token_json: { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || null }
+      });
+      if (vaultError) throw new Error("Failed to store Gmail token in Vault: " + vaultError.message);
+      settings.gmail_token = { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || null };
+
       asyncLog(supabaseAdmin, user.id, "USER_BOOTSTRAPPED", { sync_flags: syncFlags });
 
       try {
@@ -219,11 +227,15 @@ Deno.serve(async (req: Request) => {
         console.warn("Gmail watch error:", e.message);
       }
     } else if (reqBody.providerToken) {
-      // Returning user — refresh stored OAuth tokens with freshly issued ones from the sign-in
-      await supabaseAdmin.from("user_settings").update({
-        gmail_token: { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || settings.gmail_token?.refresh_token || null }
-      }).eq("user_id", user.id);
-      settings.gmail_token = { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || settings.gmail_token?.refresh_token || null };
+      // Returning user — refresh stored OAuth tokens in Vault with freshly issued ones
+      const newGmailToken = { token: reqBody.providerToken, refresh_token: reqBody.providerRefreshToken || settings.gmail_token?.refresh_token || null };
+      const { error: vaultError } = await supabaseAdmin.rpc("vault_store_gmail_token", {
+        p_user_id: user.id,
+        p_token_json: newGmailToken
+      });
+      if (vaultError) throw new Error("Failed to refresh Gmail token in Vault: " + vaultError.message);
+      settings.gmail_token = newGmailToken;
+
       asyncLog(supabaseAdmin, user.id, "GMAIL_TOKEN_REFRESHED", { source: "providerToken_in_request" });
       try {
         await registerGmailWatch(reqBody.providerToken, supabaseAdmin, user.id);
@@ -558,7 +570,8 @@ Deno.serve(async (req: Request) => {
               emailEmbedding: actionEmbedding,
             });
 
-            const extractedActions = await actionExtractor.extract(actionBody, subject, contextPack);
+            const actionDirection = newMessages.some((m: any) => (m.labelIds || []).includes("SENT")) ? "sent" : "inbox";
+            const extractedActions = await actionExtractor.extract(actionBody, subject, contextPack, actionDirection);
             if (extractedActions) {
               const reconciliation = await actionReconciler.reconcile({
                 userId: user.id,

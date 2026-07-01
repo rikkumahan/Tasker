@@ -38,7 +38,7 @@ Deno.serve(async (req: Request) => {
 
     // Fetch stored Gmail token
     const { data: settings } = await supabaseAdmin
-      .from("user_settings")
+      .from("user_settings_decrypted")
       .select("gmail_token")
       .eq("user_id", userId)
       .single();

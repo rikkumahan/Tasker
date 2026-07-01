@@ -1,24 +1,23 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, RefreshControl, ActivityIndicator } from 'react-native';
 import { useTabBarPadding } from '../../hooks/useTabBarPadding';
 import AIPanel, { AIPanelProvider } from '../../components/AIPanel';
 import { DailyBriefHero, TopPriorities, PeopleWaiting } from '../../components/DashboardCards';
 import { UnifiedPageHeader } from '../../components/UnifiedPageHeader';
 import { T } from '../../components/Theme';
-import { PRIORITIES } from '../../components/mockData';
 import { IconSparkle } from '../../components/Icons';
 import useAuthStore from '../../store/authStore';
+import useAppStore from '../../store/appStore';
 
 const dateString = new Date().toLocaleDateString('en-US', {
   weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
 });
 
-const TodayActions = () => {
-  const signOut = useAuthStore((s) => s.signOut);
+const TodayActions = ({ onSync, syncing }) => {
   return (
     <>
-      <TouchableOpacity style={s.syncBtn} activeOpacity={0.75} onPress={signOut}>
-        <Text style={s.syncText}>Sign Out</Text>
+      <TouchableOpacity style={s.syncBtn} activeOpacity={0.75} onPress={onSync} disabled={syncing}>
+        <Text style={s.syncText}>{syncing ? 'Syncing...' : 'Sync'}</Text>
       </TouchableOpacity>
       <TouchableOpacity style={s.briefBtn} activeOpacity={0.85}>
         <IconSparkle size={13} color="white" />
@@ -33,9 +32,46 @@ export default function TodayScreen() {
   const [panelVisible, setPanelVisible] = useState(false);
   const tabBarPadding = useTabBarPadding();
 
+  const session = useAuthStore(s => s.session);
+  const { threads, loading, refreshing, fetchAll } = useAppStore();
+
+  const priorities = useMemo(() => {
+    return threads.filter(t => t.priority === 'urgent' || t.priority === 'high').slice(0, 5);
+  }, [threads]);
+
+  const waitingOn = useMemo(() => {
+    return threads.filter(t => t.action_type === 'reply').slice(0, 4);
+  }, [threads]);
+
+  const formattedWaiting = useMemo(() => {
+    return waitingOn.map(t => ({
+      id: t.id,
+      person: t.assignedFrom,
+      initials: t.initials,
+      role: t.project || 'General',
+      waiting: t.timeAgo,
+      urgent: t.priority === 'urgent'
+    }));
+  }, [waitingOn]);
+
+  const metrics = useMemo(() => {
+    const actionItems = threads.length;
+    const waitingCount = threads.filter(t => t.action_type === 'reply').length;
+    const unreadCount = threads.filter(t => !t.is_read).length;
+
+    const urgentCount = threads.filter(t => t.priority === 'urgent').length;
+    const waitingOver24h = threads.filter(t => t.action_type === 'reply' && t.timeAgo.endsWith('d')).length;
+
+    return [
+      { value: String(actionItems), label: 'Action Items', sub: `${urgentCount} urgent` },
+      { value: String(waitingCount), label: 'Waiting On', sub: `${waitingOver24h} over 24h` },
+      { value: String(unreadCount), label: 'Unread Threads', sub: 'in inbox' }
+    ];
+  }, [threads]);
+
   const selectedItem = useMemo(
-    () => PRIORITIES.find(p => p.id === selectedId) ?? null,
-    [selectedId],
+    () => threads.find(p => p.id === selectedId) ?? null,
+    [selectedId, threads],
   );
 
   const handleSelect = useCallback((id) => {
@@ -48,13 +84,27 @@ export default function TodayScreen() {
     setSelectedId(null);
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    fetchAll(true);
+  }, [fetchAll]);
+
+  const userName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'User';
+
+  if (loading && threads.length === 0) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: T.bg }}>
+        <ActivityIndicator size="large" color={T.accent} />
+      </View>
+    );
+  }
+
   return (
     <AIPanelProvider>
       <View style={s.root}>
         <UnifiedPageHeader
           title="Today"
           subtitle={dateString}
-          rightActions={<TodayActions />}
+          rightActions={<TodayActions onSync={handleRefresh} syncing={refreshing} />}
         />
 
         {/* ── Scrollable Content ── */}
@@ -62,10 +112,18 @@ export default function TodayScreen() {
           style={{ flex: 1 }}
           contentContainerStyle={[s.scrollContent, { paddingBottom: tabBarPadding }]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={[T.accent]}
+              tintColor={T.accent}
+            />
+          }
         >
-          <DailyBriefHero />
-          <TopPriorities selectedId={selectedId} onSelect={handleSelect} />
-          <PeopleWaiting />
+          <DailyBriefHero metrics={metrics} onRefresh={handleRefresh} userName={userName} />
+          <TopPriorities selectedId={selectedId} onSelect={handleSelect} data={priorities} />
+          <PeopleWaiting data={formattedWaiting} />
         </ScrollView>
 
         {/* ── AI Modal Bottom Sheet ── */}

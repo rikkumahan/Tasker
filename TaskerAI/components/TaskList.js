@@ -6,7 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  ScrollView, StyleSheet,
+  ScrollView, StyleSheet, RefreshControl, ActivityIndicator,
 } from 'react-native';
 import { T } from './Theme';
 import { PriorityRow } from './DashboardCards';
@@ -181,24 +181,37 @@ const es = StyleSheet.create({
 
 const Divider = () => <View style={{ height: 1, backgroundColor: T.borderSoft, marginLeft: 16 }} />;
 
-export const TaskList = ({ selectedId, onSelect, contentPaddingBottom = 0 }) => {
+export const TaskList = ({
+  selectedId, onSelect, contentPaddingBottom = 0,
+  data, loading, onRefresh, refreshing
+}) => {
   const [search, setSearch]   = useState('');
   const [filter, setFilter]   = useState('all');
 
+  const sourceData = data || TASKS;
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    return TASKS.filter(t => {
+    return sourceData.filter(t => {
       const matchFilter = filter === 'all' || t.priority === filter;
       const matchSearch = !q
-        || t.title.toLowerCase().includes(q)
-        || t.subject.toLowerCase().includes(q)
-        || t.assignedFrom.toLowerCase().includes(q)
-        || t.project.toLowerCase().includes(q);
+        || (t.title && t.title.toLowerCase().includes(q))
+        || (t.subject && t.subject.toLowerCase().includes(q))
+        || (t.assignedFrom && t.assignedFrom.toLowerCase().includes(q))
+        || (t.project && t.project.toLowerCase().includes(q));
       return matchFilter && matchSearch;
     });
-  }, [search, filter]);
+  }, [sourceData, search, filter]);
 
-  const counts = useMemo(() => ({ all: TASKS.length }), []);
+  const counts = useMemo(() => ({ all: sourceData.length }), [sourceData]);
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 40 }}>
+        <ActivityIndicator size="large" color={T.accent} />
+      </View>
+    );
+  }
 
   return (
     <View style={tl.root}>
@@ -230,6 +243,16 @@ export const TaskList = ({ selectedId, onSelect, contentPaddingBottom = 0 }) => 
               : null
         }
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refreshing || false}
+              onRefresh={onRefresh}
+              colors={[T.accent]}
+              tintColor={T.accent}
+            />
+          ) : undefined
+        }
       />
     </View>
   );

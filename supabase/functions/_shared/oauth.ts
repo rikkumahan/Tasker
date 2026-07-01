@@ -43,10 +43,15 @@ export async function refreshGmailToken(userId: string, refreshToken: string, su
     return null;
   }
 
-  // Atomic Persistence
+  // Atomic Persistence (using Supabase Vault RPC)
   const newGmailTokenObj = { token: data.access_token, refresh_token: refreshToken };
+  await supabaseAdmin.rpc("vault_store_gmail_token", {
+    p_user_id: userId,
+    p_token_json: newGmailTokenObj
+  });
+
   await supabaseAdmin.from("user_settings")
-    .update({ gmail_token: newGmailTokenObj, sync_status: 'ACTIVE', last_sync_error: null })
+    .update({ sync_status: 'ACTIVE', last_sync_error: null })
     .eq("user_id", userId);
 
   await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "GMAIL_TOKEN_REFRESHED", data: {} });

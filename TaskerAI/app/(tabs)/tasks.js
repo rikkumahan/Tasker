@@ -16,9 +16,7 @@ import AIPanel from '../../components/AIPanel';
 import { UnifiedPageHeader } from '../../components/UnifiedPageHeader';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useTabBarPadding } from '../../hooks/useTabBarPadding';
-import { TASKS } from '../../components/mockData';
-
-
+import useAppStore from '../../store/appStore';
 
 export default function TasksScreen() {
   const { isMobile } = useBreakpoint();
@@ -26,7 +24,9 @@ export default function TasksScreen() {
   const [selectedId, setSelectedId]     = useState(null);
   const [panelVisible, setPanelVisible] = useState(false);
 
-  const selectedTask = TASKS.find(t => t.id === selectedId) ?? null;
+  const { threads, loading, refreshing, fetchAll } = useAppStore();
+
+  const selectedTask = threads.find(t => t.id === selectedId) ?? null;
 
   const handleSelect = useCallback((id) => {
     setSelectedId(id);
@@ -37,6 +37,10 @@ export default function TasksScreen() {
     setPanelVisible(false);
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    fetchAll(true);
+  }, [fetchAll]);
+
   // ── WEB: 2-column inline layout ──────────────────────────────────────────
   if (!isMobile) {
     return (
@@ -45,10 +49,17 @@ export default function TasksScreen() {
           <UnifiedPageHeader
             title="Tasks"
             subtitle="All actionable items from your threads"
-            badgeCount={TASKS.length}
+            badgeCount={threads.length}
           />
           <View style={ws.listInner}>
-            <TaskList selectedId={selectedId} onSelect={handleSelect} />
+            <TaskList
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              data={threads}
+              loading={loading}
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+            />
           </View>
         </View>
         <TaskDetailPanel selectedTask={selectedTask} onClose={handleClose} />
@@ -62,13 +73,17 @@ export default function TasksScreen() {
       <UnifiedPageHeader
         title="Tasks"
         subtitle="All actionable items from your threads"
-        badgeCount={TASKS.length}
+        badgeCount={threads.length}
       />
       <View style={ms.listWrap}>
         <TaskList
           selectedId={selectedId}
           onSelect={handleSelect}
           contentPaddingBottom={tabBarPadding}
+          data={threads}
+          loading={loading}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
         />
       </View>
       <AIPanel

@@ -188,12 +188,12 @@ async function handleRawEmail(c: any) {
   if (!message_id) return c.json({ error: "message_id is required" }, 400);
 
   const { data: userSettings } = await supabase
-    .from('user_settings')
-    .select('secrets')
+    .from('user_settings_decrypted')
+    .select('gmail_token')
     .eq('user_id', user.id)
     .single();
 
-  const providerToken = userSettings?.secrets?.provider_token;
+  const providerToken = userSettings?.gmail_token?.token;
   if (!providerToken) {
     return c.json({ error: "Google OAuth token missing. Please sign in again." }, 401);
   }

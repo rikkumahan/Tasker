@@ -4,7 +4,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
-  FlatList, Modal, Pressable, StyleSheet,
+  FlatList, Modal, Pressable, StyleSheet, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { T } from './Theme';
 import { PEOPLE } from './mockData';
@@ -345,15 +345,20 @@ const filterPeople = (people, rawQuery) => {
   return q ? people.filter(p => matchesPerson(p, q)) : people;
 };
 
-export const PeopleGrid = ({ numColumns, contentPaddingBottom = 0 }) => {
+export const PeopleGrid = ({
+  numColumns, contentPaddingBottom = 0,
+  data, loading, onRefresh, refreshing
+}) => {
   const { isMobile } = useBreakpoint();
   const [search, setSearch] = useState('');
   const [selectedPerson, setSelectedPerson] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
+  const sourceData = data || PEOPLE;
+
   const filtered = useMemo(
-    () => filterPeople(PEOPLE, search),
-    [search],
+    () => filterPeople(sourceData, search),
+    [sourceData, search],
   );
 
   const handleCardPress = useCallback((person) => {
@@ -372,6 +377,14 @@ export const PeopleGrid = ({ numColumns, contentPaddingBottom = 0 }) => {
       <PersonCard person={item} isMobile={isMobile} onPress={handleCardPress} />
     </View>
   );
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 40 }}>
+        <ActivityIndicator size="large" color={T.accent} />
+      </View>
+    );
+  }
 
   return (
     <View style={pg.root}>
@@ -396,6 +409,16 @@ export const PeopleGrid = ({ numColumns, contentPaddingBottom = 0 }) => {
               : null
         }
         columnWrapperStyle={numColumns > 1 ? pg.columnWrapper : null}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refreshing || false}
+              onRefresh={onRefresh}
+              colors={[T.accent]}
+              tintColor={T.accent}
+            />
+          ) : undefined
+        }
       />
       <PersonDetailModal
         person={selectedPerson}

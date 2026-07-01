@@ -55,14 +55,16 @@ export default function WebRootLayout() {
     }
 
     if (wizardStep && ONBOARDING_ROUTES[wizardStep]) {
-      if (!inOnboardingGroup) router.replace(ONBOARDING_ROUTES[wizardStep]);
+      const isOnProgressScreen = segments[0] === '(onboarding)' && segments[1] === 'progress';
+      const needsRedirect = wizardStep === 'progress' ? !isOnProgressScreen : !inOnboardingGroup;
+      if (needsRedirect) router.replace(ONBOARDING_ROUTES[wizardStep]);
       return;
     }
 
     if (inAuthGroup || inOnboardingGroup) {
       router.replace('/(tabs)');
     }
-  }, [session, isLoading, wizardStep]);
+  }, [session, isLoading, wizardStep, segments]);
 
   // Unauthenticated or onboarding: bare Slot (no sidebar)
   const showShell = session && !isLoading && !wizardStep;
