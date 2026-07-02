@@ -1,4 +1,3 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { prePassRedact } from "./pii.ts";
 import { callLLM } from "./llm.ts";
 
