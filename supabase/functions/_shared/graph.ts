@@ -195,7 +195,7 @@ export class GraphRAGExtractor {
     emailBody: string,
     emailSubject: string
   ): Promise<{ entities: EntityTriplet[]; relationships: RelationshipTriplet[] }> {
-    const redactedText = prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
+    const redactedText = await prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
     const prompt = buildGraphExtractionPrompt(redactedText);
 
     const responseText = await callLLM(prompt, {

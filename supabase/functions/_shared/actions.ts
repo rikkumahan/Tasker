@@ -153,7 +153,7 @@ export class ActionExtractor {
     contextPack: unknown,
     direction: "inbox" | "sent" | "unknown" = "unknown",
   ): Promise<ExtractedActionPayload | null> {
-    const redactedText = prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
+    const redactedText = await prePassRedact(`Subject: ${emailSubject}\nBody: ${emailBody}`);
     const nowIso = new Date().toISOString();
     const contextJson = truncateContextPack(contextPack, 6000);
 
