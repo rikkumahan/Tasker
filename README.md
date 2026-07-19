@@ -1,8 +1,10 @@
 # Tasker: Corporate Email GraphRAG Engine
 
-Tasker is a production-grade backend and React dashboard built to sync unstructured corporate emails and transform them into a searchable, relational knowledge graph.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Expo](https://img.shields.io/badge/Expo-~54-000020?logo=expo)](https://expo.dev)
+[![Supabase](https://img.shields.io/badge/Backend-Supabase-3ECF8E?logo=supabase)](https://supabase.com)
 
-![Tasker AI Dashboard](assets/dashboard.png)
+Tasker is a production-grade backend and cross-platform (web + mobile) app built to sync unstructured corporate emails and transform them into a searchable, relational knowledge graph.
 
 By running community detection and dual-mode GraphRAG, the system answers complex user questions about internal projects, contacts, and tasks, complete with inline citations linking back to original email threads.
 
@@ -23,9 +25,10 @@ At a high level, Tasker separates the ingestion of real-time emails from the hea
 - **Local Models**: Supabase AI `gte-small` runs locally for embedding generation without network overhead.
 - **Remote Models**: Groq API provides high-throughput inference. We use Llama 3.1 8B for fast, cheap entity extraction, and Llama 3.3 70B for deep reasoning during the final GraphRAG synthesis.
 
-### 4. React Frontend Dashboard
-- Built with React 19 and Vite.
-- Implements a clean bento grid layout with D3.js force-directed graphs for visualizing communication networks.
+### 4. Cross-Platform Client (`TaskerAI/`)
+- Built with Expo Router + React Native (Expo ~54, React 19) — a single codebase ships to web, iOS, and Android.
+- Zustand handles client state; Nativewind (Tailwind for React Native) handles styling.
+- Implements a dashboard with task lists, an AI panel, and a knowledge graph browser for visualizing communication networks.
 
 ---
 
@@ -54,7 +57,7 @@ flowchart TD
     classDef client fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
     
     subgraph Client [User Interface]
-        Dashboard[React 19 Dashboard]:::client
+        Dashboard[Expo / React Native Client]:::client
     end
 
     subgraph Ingestion [Email Pipeline]
@@ -111,3 +114,43 @@ A standard RAG pipeline fails on holistic questions like "What are the main engi
 - **Global Mode (Map-Reduce)**: When a user asks a broad thematic question, the system retrieves the auto-generated Community Reports. It runs parallel Map queries against Llama 3.1 to extract relevant insights from each report independently. A final Reduce step aggregates these partial answers using Llama 3.3 into a comprehensive executive summary. 
 
 This hybrid approach ensures high accuracy for both pinpoint queries and broad organizational analysis while keeping latency low.
+
+---
+
+## Project Structure
+
+```
+TaskerAI/           Active client — Expo Router + React Native (web, iOS, Android)
+supabase/functions/ Deno edge functions — sync pipeline, PII redaction, GraphRAG queries, webhooks
+supabase/migrations/ SQL schema and RPC migrations
+execution/           Scripts and edge-function-adjacent execution layer
+directives/          SOPs the assistant/orchestration layer follows
+docs/                Deep-dive guides (design system, PII redaction engine, mobile OAuth bridge)
+archive/             Superseded docs, one-off scripts, and the deprecated Vite/React frontend — kept for history, not maintained
+```
+
+## Quick Start
+
+Prerequisites: Node.js, the [Supabase CLI](https://supabase.com/docs/guides/cli), and Expo Go (or an iOS/Android simulator) for mobile.
+
+```bash
+# Client
+cd TaskerAI
+npm install
+npm run web       # or: npm run android / npm run ios
+
+# Backend (Supabase edge functions)
+cd supabase
+supabase start
+supabase functions serve
+```
+
+Set your own Supabase project URL/keys, Google OAuth credentials, and LLM provider key as environment variables / Supabase project secrets before running — see `docs/` for service-specific setup (PII redaction engine, mobile OAuth bridge).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
