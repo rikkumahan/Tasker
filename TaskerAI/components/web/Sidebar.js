@@ -3,14 +3,17 @@
 // Single responsibility: render nav items from NAV_ITEMS + brand + user zone
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Platform,
+  View, Text, StyleSheet, Pressable, Platform, ActivityIndicator,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { T } from '../Theme';
 import { NAV_ITEMS } from '../../constants/navItems';
 import useAuthStore from '../../store/authStore';
+import useAppStore from '../../store/appStore';
+import { supabase } from '../../lib/supabase';
+import { IconSync, IconSettings, IconLogOut, IconDelete } from '../ProfileSheet';
 
 // ── Logo Mark — Dot Grid T (SVG via inline approach for web) ─────────────────
 const DotGridT = () => (
@@ -31,13 +34,15 @@ const DotGridT = () => (
 );
 
 // ── Single Nav Item ───────────────────────────────────────────────────────────
-const NavItem = ({ item, isActive }) => {
+const NavItem = ({ item, isActive, badgeOverride }) => {
   const router = useRouter();
   const [hovered, setHovered] = React.useState(false);
 
   const handlePress = useCallback(() => {
     router.push(item.href);
   }, [item.href, router]);
+
+  const displayBadge = badgeOverride !== undefined ? badgeOverride : item.badge;
 
   return (
     <Pressable
@@ -65,9 +70,9 @@ const NavItem = ({ item, isActive }) => {
       </Text>
 
       {/* Badge */}
-      {item.badge != null && (
+      {displayBadge != null && displayBadge > 0 && (
         <View style={s.badge}>
-          <Text style={s.badgeText}>{item.badge}</Text>
+          <Text style={s.badgeText}>{displayBadge}</Text>
         </View>
       )}
     </Pressable>
@@ -79,6 +84,15 @@ export default function Sidebar() {
   const pathname = usePathname();
   const session = useAuthStore((s) => s.session);
   const signOut = useAuthStore((s) => s.signOut);
+  const fetchAll = useAppStore((s) => s.fetchAll);
+
+  const [showProfile, setShowProfile] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const waitingCount = useAppStore(s =>
+    s.threads.filter(t => t.action_type === 'reply' && !t.is_read).length
+  );
 
   const isActive = useCallback((item) => {
     if (item.name === 'index') return pathname === '/' || pathname === '';
@@ -91,8 +105,51 @@ export default function Sidebar() {
     ? fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
     : (userEmail?.[0] || '?').toUpperCase();
 
+  const handleSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await supabase.functions.invoke('sync');
+      await fetchAll(true);
+      alert('Sync completed successfully.');
+    } catch (e) {
+      console.error('[Sidebar Web] sync error:', e);
+      alert('Failed to start sync. Please try again.');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    const performDelete = async () => {
+      setDeleting(true);
+      try {
+        await supabase.functions.invoke('delete-account');
+        await signOut();
+        setShowProfile(false);
+      } catch (e) {
+        console.error('[Sidebar Web] delete-account error:', e);
+        alert('Failed to delete account. Please try again.');
+      } finally {
+        setDeleting(false);
+      }
+    };
+
+    if (window.confirm('WARNING: Are you sure you want to permanently delete your account and all data? This cannot be undone.')) {
+      performDelete();
+    }
+  };
+
   return (
     <View style={s.sidebar}>
+      {/* Click outside backdrop */}
+      {showProfile && (
+        <Pressable
+          style={s.popoverBackdrop}
+          onPress={() => setShowProfile(false)}
+        />
+      )}
+
       {/* ── Logo Zone ── */}
       <View style={s.logoZone}>
         <DotGridT />
@@ -107,13 +164,78 @@ export default function Sidebar() {
       {/* ── Nav Items ── */}
       <View style={s.navList}>
         {NAV_ITEMS.map(item => (
-          <NavItem key={item.name} item={item} isActive={isActive(item)} />
+          <NavItem
+            key={item.name}
+            item={item}
+            isActive={isActive(item)}
+            badgeOverride={item.name === 'waiting' ? waitingCount : undefined}
+          />
         ))}
       </View>
 
-      {/* ── Bottom User Zone (Clickable to Sign Out) ── */}
+      {/* ── Floating Popover Profile Card ── */}
+      {showProfile && (
+        <View style={s.popoverCard}>
+          <View style={s.popoverHeader}>
+            <View style={s.popoverAvatar}>
+              <Text style={s.popoverAvatarText}>{initials}</Text>
+            </View>
+            <View style={s.popoverText}>
+              <Text style={s.popoverName} numberOfLines={1}>{fullName}</Text>
+              <Text style={s.popoverEmail} numberOfLines={1}>{userEmail}</Text>
+            </View>
+          </View>
+
+          <View style={s.popoverDivider} />
+
+          <Pressable
+            onPress={handleSync}
+            disabled={syncing}
+            style={({ pressed }) => [s.popoverRow, pressed && { opacity: 0.7 }]}
+          >
+            <IconSync />
+            <Text style={s.popoverRowText}>{syncing ? 'Syncing...' : 'Force Sync'}</Text>
+            {syncing && <ActivityIndicator size="small" color={T.accent} style={{ marginLeft: 'auto' }} />}
+          </Pressable>
+
+          <View style={s.popoverDivider} />
+
+          <Pressable
+            onPress={() => alert('Settings features are coming soon.')}
+            style={({ pressed }) => [s.popoverRow, pressed && { opacity: 0.7 }]}
+          >
+            <IconSettings />
+            <Text style={s.popoverRowText}>Settings</Text>
+            <Text style={s.stubBadge}>Soon</Text>
+          </Pressable>
+
+          <View style={s.popoverDivider} />
+
+          <Pressable
+            onPress={() => { setShowProfile(false); signOut(); }}
+            style={({ pressed }) => [s.popoverRow, pressed && { opacity: 0.7 }]}
+          >
+            <IconLogOut />
+            <Text style={s.popoverRowText}>Sign Out</Text>
+          </Pressable>
+
+          <View style={s.popoverDivider} />
+
+          <Pressable
+            onPress={handleDeleteAccount}
+            disabled={deleting}
+            style={({ pressed }) => [s.popoverRow, pressed && { opacity: 0.7 }]}
+          >
+            <IconDelete />
+            <Text style={[s.popoverRowText, { color: T.danger }]}>Delete Account</Text>
+            {deleting && <ActivityIndicator size="small" color={T.danger} style={{ marginLeft: 'auto' }} />}
+          </Pressable>
+        </View>
+      )}
+
+      {/* ── Bottom User Zone (Clickable to open Popover) ── */}
       <Pressable
-        onPress={signOut}
+        onPress={() => setShowProfile(prev => !prev)}
         style={({ pressed }) => [s.userZone, pressed && { opacity: 0.7 }]}
       >
         <View style={s.avatar}>
@@ -121,7 +243,7 @@ export default function Sidebar() {
         </View>
         <View style={s.userInfo}>
           <Text style={s.userName}>{fullName}</Text>
-          <Text style={s.userEmail}>Sign Out ({userEmail})</Text>
+          <Text style={s.userEmail}>View Profile ({userEmail})</Text>
         </View>
       </Pressable>
     </View>
@@ -300,5 +422,95 @@ const s = StyleSheet.create({
     fontSize: T.textXs,
     color: T.muted,
     marginTop: 1,
+  },
+
+  // ── Web Profile Dropdown ──
+  popoverBackdrop: {
+    position: Platform.OS === 'web' ? 'fixed' : 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    zIndex: 99,
+    backgroundColor: 'transparent',
+  },
+  popoverCard: {
+    position: 'absolute',
+    bottom: 84,
+    left: 16,
+    right: 16,
+    backgroundColor: T.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: T.border,
+    padding: 12,
+    zIndex: 100,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+        backdropFilter: 'blur(16px)',
+      },
+      default: {
+        elevation: 8,
+      }
+    }),
+  },
+  popoverHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+    paddingHorizontal: 4,
+  },
+  popoverAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: T.accentTint || 'rgba(242,103,60,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  popoverAvatarText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: T.accent,
+  },
+  popoverText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  popoverName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: T.fg,
+  },
+  popoverEmail: {
+    fontSize: 11,
+    color: T.muted,
+  },
+  popoverDivider: {
+    height: 1,
+    backgroundColor: T.borderSoft,
+    marginVertical: 4,
+  },
+  popoverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  popoverRowText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: T.fg2,
+    marginLeft: 8,
+  },
+  stubBadge: {
+    marginLeft: 'auto',
+    fontSize: 10,
+    fontWeight: '600',
+    color: T.muted,
+    backgroundColor: T.borderSoft,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
   },
 });

@@ -95,7 +95,8 @@ export const T = {
 export const PRIORITY_MAP = {
   urgent: { bg: '#fff1f2', fg: '#dc2626', label: 'Urgent', dot: '#ef4444' },
   high: { bg: '#fffbeb', fg: '#d97706', label: 'High', dot: '#f59e0b' },
-  medium: { bg: '#f0fdf4', fg: '#16a34a', label: 'Medium', dot: '#16a34a' },
+  medium: { bg: '#eff6ff', fg: '#2563eb', label: 'Medium', dot: '#3b82f6' },
+  low: { bg: '#f0fdf4', fg: '#16a34a', label: 'Low', dot: '#16a34a' },
 };
 
 export const PRIORITY_PANEL_META = {

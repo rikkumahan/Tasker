@@ -1,122 +1,90 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // tasks.js — Tasks tab screen
-// Web:    2-column layout → TaskList (flex 1) + TaskDetailPanel (480px inline)
-// Mobile: single-column TaskList + AIPanel bottom sheet on row tap
+// Unified: single-column layout using sliding AIPanel overlay drawer on Web & Mobile
 // All tokens from DESIGN_SYSTEM.md via Theme.js.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View, StyleSheet, Platform,
 } from 'react-native';
 import { T } from '../../components/Theme';
 import { TaskList } from '../../components/TaskList';
-import { TaskDetailPanel } from '../../components/web/TaskDetailPanel';
-import AIPanel from '../../components/AIPanel';
+import AIPanel, { AIPanelProvider } from '../../components/AIPanel';
 import { UnifiedPageHeader } from '../../components/UnifiedPageHeader';
-import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useTabBarPadding } from '../../hooks/useTabBarPadding';
 import useAppStore from '../../store/appStore';
 
 export default function TasksScreen() {
-  const { isMobile } = useBreakpoint();
   const tabBarPadding = useTabBarPadding();
-  const [selectedId, setSelectedId]     = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [panelVisible, setPanelVisible] = useState(false);
 
   const { threads, loading, refreshing, fetchAll } = useAppStore();
 
-  const selectedTask = threads.find(t => t.id === selectedId) ?? null;
+  const selectedTask = useMemo(
+    () => threads.find(t => t.id === selectedId) ?? null,
+    [selectedId, threads]
+  );
 
   const handleSelect = useCallback((id) => {
     setSelectedId(id);
-    if (isMobile) setPanelVisible(true);
-  }, [isMobile]);
+    setPanelVisible(true);
+  }, []);
 
   const handleClose = useCallback(() => {
     setPanelVisible(false);
+    setSelectedId(null);
   }, []);
 
   const handleRefresh = useCallback(() => {
     fetchAll(true);
   }, [fetchAll]);
 
-  // ── WEB: 2-column inline layout ──────────────────────────────────────────
-  if (!isMobile) {
-    return (
-      <View style={ws.root}>
-        <View style={ws.listCol}>
-          <UnifiedPageHeader
-            title="Tasks"
-            subtitle="All actionable items from your threads"
-            badgeCount={threads.length}
-          />
-          <View style={ws.listInner}>
-            <TaskList
-              selectedId={selectedId}
-              onSelect={handleSelect}
-              data={threads}
-              loading={loading}
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-            />
-          </View>
-        </View>
-        <TaskDetailPanel selectedTask={selectedTask} onClose={handleClose} />
-      </View>
-    );
-  }
-
-  // ── MOBILE: single column + bottom sheet ─────────────────────────────────
   return (
-    <View style={ms.root}>
-      <UnifiedPageHeader
-        title="Tasks"
-        subtitle="All actionable items from your threads"
-        badgeCount={threads.length}
-      />
-      <View style={ms.listWrap}>
-        <TaskList
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          contentPaddingBottom={tabBarPadding}
-          data={threads}
-          loading={loading}
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
+    <AIPanelProvider>
+      <View style={s.root}>
+        <UnifiedPageHeader
+          title="Tasks"
+          subtitle="All actionable items from your threads"
+          badgeCount={threads.length}
+        />
+        <View style={s.listWrap}>
+          <TaskList
+            selectedId={selectedId}
+            onSelect={handleSelect}
+            contentPaddingBottom={Platform.OS === 'web' ? 24 : tabBarPadding}
+            data={threads}
+            loading={loading}
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+          />
+        </View>
+        <AIPanel
+          visible={panelVisible}
+          item={selectedTask}
+          onClose={handleClose}
         />
       </View>
-      <AIPanel
-        visible={panelVisible}
-        item={selectedTask}
-        onClose={handleClose}
-      />
-    </View>
+    </AIPanelProvider>
   );
 }
 
-// ── Web styles ────────────────────────────────────────────────────────────────
-const ws = StyleSheet.create({
+const s = StyleSheet.create({
   root: {
     flex: 1,
-    flexDirection: 'row',
     backgroundColor: T.bg,
     height: '100%',
+    ...Platform.select({
+      web: { overflow: 'hidden' },
+    }),
   },
-  listCol: {
+  listWrap: {
     flex: 1,
-    backgroundColor: T.bg,
-    borderRightWidth: 1,
-    borderRightColor: T.border,
+    paddingHorizontal: Platform.OS === 'web' ? T.sp6 : T.sp4,
+    height: '100%',
+    ...Platform.select({
+      web: { overflow: 'hidden' },
+    }),
   },
-  listInner: {
-    flex: 1,
-    paddingHorizontal: T.sp6,         // 24px — §4
-  },
-});
-
-// ── Mobile styles ─────────────────────────────────────────────────────────────
-const ms = StyleSheet.create({
-  root:     { flex: 1, backgroundColor: T.bg },
-  listWrap: { flex: 1, paddingHorizontal: T.sp4 },  // 16px — §4
 });

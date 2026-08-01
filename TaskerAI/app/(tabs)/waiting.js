@@ -32,7 +32,7 @@ export default function WaitingScreen() {
   const [panelVisible, setPanelVisible] = useState(false);
   const tabBarPadding = useTabBarPadding();
 
-  const { threads, loading, refreshing, fetchAll } = useAppStore();
+  const { threads, loading, refreshing, fetchAll, toggleStar } = useAppStore();
 
   // Filter threads where action_type === 'reply'
   const waitingThreads = useMemo(() => {
@@ -83,6 +83,7 @@ export default function WaitingScreen() {
                 item={item}
                 selected={selectedId === item.id}
                 onPress={handleSelect}
+                onToggleStar={toggleStar}
               />
             )}
             ItemSeparatorComponent={Divider}

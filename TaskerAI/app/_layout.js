@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
+import { View } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import useAuthStore from '../store/authStore';
+import { T } from '../components/Theme';
 
 const ONBOARDING_ROUTES = {
   lookback: '/(onboarding)/step-lookback',
@@ -69,7 +71,19 @@ export default function RootLayout() {
     }
   }, [session, isLoading, wizardStep, segments]);
 
-  // Always render the Stack — navigation happens via useEffect above
+  // While auth is resolving, render a blank screen.
+  // This prevents Expo Router's dev-persistence from flashing the last
+  // visited route (e.g. onboarding) on first bundle load before checkSyncHealth finishes.
+  if (isLoading) {
+    return (
+      <SafeAreaProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <View style={{ flex: 1, backgroundColor: T.bg }} />
+        </GestureHandlerRootView>
+      </SafeAreaProvider>
+    );
+  }
+
   return (
     <SafeAreaProvider>
       <GestureHandlerRootView style={{ flex: 1 }}>

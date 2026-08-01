@@ -12,6 +12,7 @@ import { T } from './Theme';
 import { PriorityRow } from './DashboardCards';
 import { IconSparkle } from './Icons';
 import { TASKS } from './mockData';
+import useAppStore from '../store/appStore';
 
 // ─── Search icon (magnifying glass) ──────────────────────────────────────────
 const SearchIcon = ({ size = 16, color = T.muted }) => {
@@ -79,10 +80,10 @@ const sb = StyleSheet.create({
 // §7: motionFast 150ms for active state transition
 
 const CHIPS = [
-  { key: 'all',    label: 'All'    },
-  { key: 'urgent', label: 'Urgent' },
-  { key: 'high',   label: 'High'   },
-  { key: 'medium', label: 'Medium' },
+  { key: 'all',      label: 'All'      },
+  { key: 'priority', label: 'Priority' },
+  { key: 'action',   label: 'Action'   },
+  { key: 'starred',  label: 'Starred'  },
 ];
 
 const Chip = ({ chip, active, onPress, count }) => (
@@ -113,7 +114,7 @@ export const FilterChips = ({ active, onSelect, counts }) => (
         chip={chip}
         active={active === chip.key}
         onPress={onSelect}
-        count={chip.key === 'all' ? counts.all : null}
+        count={counts[chip.key]}
       />
     ))}
   </ScrollView>
@@ -121,7 +122,7 @@ export const FilterChips = ({ active, onSelect, counts }) => (
 
 const fc = StyleSheet.create({
   scroll:      { marginBottom: T.sp3 },
-  content:     { gap: T.sp2, paddingBottom: 2 },
+  content:     { flexDirection: 'row', alignItems: 'center', gap: T.sp2, paddingBottom: 2 },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -193,7 +194,15 @@ export const TaskList = ({
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
     return sourceData.filter(t => {
-      const matchFilter = filter === 'all' || t.priority === filter;
+      let matchFilter = true;
+      if (filter === 'priority') {
+        matchFilter = t.priority === 'urgent' || t.priority === 'high';
+      } else if (filter === 'action') {
+        matchFilter = t.action_items && t.action_items.length > 0;
+      } else if (filter === 'starred') {
+        matchFilter = !!t.is_starred;
+      }
+
       const matchSearch = !q
         || (t.title && t.title.toLowerCase().includes(q))
         || (t.subject && t.subject.toLowerCase().includes(q))
@@ -203,7 +212,22 @@ export const TaskList = ({
     });
   }, [sourceData, search, filter]);
 
-  const counts = useMemo(() => ({ all: sourceData.length }), [sourceData]);
+  const counts = useMemo(() => {
+    let priority = 0;
+    let action = 0;
+    let starred = 0;
+    sourceData.forEach(t => {
+      if (t.priority === 'urgent' || t.priority === 'high') priority++;
+      if (t.action_items && t.action_items.length > 0) action++;
+      if (t.is_starred) starred++;
+    });
+    return {
+      all: sourceData.length,
+      priority,
+      action,
+      starred,
+    };
+  }, [sourceData]);
 
   if (loading) {
     return (
@@ -225,13 +249,17 @@ export const TaskList = ({
       <FlatList
         data={filtered}
         keyExtractor={t => t.id}
-        renderItem={({ item }) => (
-          <PriorityRow
-            item={item}
-            selected={selectedId === item.id}
-            onPress={onSelect}
-          />
-        )}
+        renderItem={({ item }) => {
+          const toggleStar = useAppStore.getState().toggleStar;
+          return (
+            <PriorityRow
+              item={item}
+              selected={selectedId === item.id}
+              onPress={onSelect}
+              onToggleStar={toggleStar}
+            />
+          );
+        }}
         ItemSeparatorComponent={Divider}
         ListEmptyComponent={<EmptyState isSearch={search.length > 0 || filter !== 'all'} />}
         showsVerticalScrollIndicator={false}

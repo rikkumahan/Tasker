@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal,
   Animated, Dimensions, ScrollView, Pressable, Platform,
@@ -142,8 +142,14 @@ const WebDrawer = ({ visible, item, onClose }) => {
   const slideAnim   = useRef(new Animated.Value(T.drawerW)).current;
   const backdropAnim = useRef(new Animated.Value(0)).current;
 
+  // Local state to manage unmounting delay
+  const [active, setActive] = useState(visible);
+  const [localItem, setLocalItem] = useState(item);
+
   useEffect(() => {
     if (visible) {
+      setLocalItem(item);
+      setActive(true);
       Animated.parallel([
         Animated.timing(slideAnim, {
           toValue: 0,
@@ -168,11 +174,13 @@ const WebDrawer = ({ visible, item, onClose }) => {
           duration: T.motionFast,   // 150ms — faster on close
           useNativeDriver: true,
         }),
-      ]).start();
+      ]).start(() => {
+        setActive(false);
+      });
     }
-  }, [visible]);
+  }, [visible, item]);
 
-  if (!visible && !item) return null;
+  if (!active || !localItem) return null;
 
   return (
     <>
@@ -188,21 +196,26 @@ const WebDrawer = ({ visible, item, onClose }) => {
       <Animated.View
         style={[s.webDrawer, { transform: [{ translateX: slideAnim }] }]}
       >
-        <PanelContent item={item} onClose={onClose} />
+        <PanelContent item={localItem} onClose={onClose} />
       </Animated.View>
     </>
   );
 };
 
 // ─── Mobile Bottom Sheet ──────────────────────────────────────────────────────
-// Unchanged from original implementation
 
 const MobileSheet = ({ visible, item, onClose }) => {
   const slideAnim   = useRef(new Animated.Value(SHEET_H)).current;
   const backdropAnim = useRef(new Animated.Value(0)).current;
 
+  // Local state to manage unmounting delay
+  const [active, setActive] = useState(visible);
+  const [localItem, setLocalItem] = useState(item);
+
   useEffect(() => {
     if (visible) {
+      setLocalItem(item);
+      setActive(true);
       Animated.parallel([
         Animated.spring(slideAnim, {
           toValue: 0,
@@ -228,13 +241,17 @@ const MobileSheet = ({ visible, item, onClose }) => {
           duration: 200,
           useNativeDriver: true,
         }),
-      ]).start();
+      ]).start(() => {
+        setActive(false);
+      });
     }
-  }, [visible]);
+  }, [visible, item]);
+
+  if (!active || !localItem) return null;
 
   return (
     <Modal
-      visible={visible}
+      visible={visible || active} // Keep native Modal visible during JavaScript exit transition
       transparent
       animationType="none"
       onRequestClose={onClose}
@@ -255,7 +272,7 @@ const MobileSheet = ({ visible, item, onClose }) => {
         <View style={s.handleRow}>
           <View style={s.handle} />
         </View>
-        <PanelContent item={item} onClose={onClose} />
+        <PanelContent item={localItem} onClose={onClose} />
       </Animated.View>
     </Modal>
   );

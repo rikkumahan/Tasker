@@ -64,6 +64,7 @@ const _formatThread = (t, projects) => {
     relatedPeople: emailContacts.length > 0 ? emailContacts : [contact?.name || 'Unknown'],
     suggestedReply: t.suggested_reply || null,
     is_read: t.is_read || false,
+    is_starred: t.is_starred || false,
     created_at: t.created_at,
   };
 };
@@ -108,7 +109,7 @@ const useAppStore = create((set, get) => ({
       const [threadsRes, contactsRes, projectsRes, settingsRes] = await Promise.all([
         supabase
           .from('threads')
-          .select('id, gmail_thread_id, subject, urgency, action_type, ai_summary, semantic_summary, action_items, suggested_reply, is_read, created_at, project_id, emails(sender_id, snippet, contacts(name, email))')
+          .select('id, gmail_thread_id, subject, urgency, action_type, ai_summary, semantic_summary, action_items, suggested_reply, is_read, is_starred, created_at, project_id, emails(sender_id, snippet, contacts(name, email))')
           .eq('user_id', session.user.id)
           .order('created_at', { ascending: false })
           .limit(50),
@@ -185,6 +186,32 @@ const useAppStore = create((set, get) => ({
     }
   },
 
+  toggleStar: async (threadId) => {
+    const { threads } = get();
+    const thread = threads.find(t => t.id === threadId);
+    if (!thread) return;
+    const nextStarred = !thread.is_starred;
+
+    // Optimistic Update
+    set({
+      threads: threads.map(t => t.id === threadId ? { ...t, is_starred: nextStarred } : t),
+    });
+
+    try {
+      const { error } = await supabase
+        .from('threads')
+        .update({ is_starred: nextStarred })
+        .eq('id', threadId);
+      if (error) throw error;
+    } catch (err) {
+      console.error('[appStore toggleStar error]:', err);
+      // Revert optimistic update on failure
+      set({
+        threads: threads.map(t => t.id === threadId ? { ...t, is_starred: !nextStarred } : t),
+      });
+    }
+  },
+
   initRealtime: (userId) => {
     const { _channel } = get();
     if (_channel) return; // subscription already active
@@ -215,6 +242,23 @@ const useAppStore = create((set, get) => ({
       supabase.removeChannel(_channel);
       set({ _channel: null });
     }
+  },
+
+  // ISSUE-6: clears cached data on sign-out / account switch so the UI can
+  // never render a previous user's threads/contacts/projects under a new
+  // identity. Does not touch _channel/_fetching — realtime teardown is
+  // destroyRealtime()'s job.
+  reset: () => {
+    set({
+      threads: [],
+      contacts: [],
+      projects: [],
+      userSettings: null,
+      loading: false,
+      refreshing: false,
+      error: null,
+      _lastFetchedAt: null,
+    });
   },
 }));
 

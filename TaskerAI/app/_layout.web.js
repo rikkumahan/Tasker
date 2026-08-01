@@ -9,6 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import WebShell from '../components/web/WebShell';
 import useAuthStore from '../store/authStore';
+import useAppStore from '../store/appStore';
 
 const ONBOARDING_ROUTES = {
   lookback: '/(onboarding)/step-lookback',
@@ -26,11 +27,26 @@ export default function WebRootLayout() {
   const isLoading = useAuthStore((s) => s.isLoading);
   const wizardStep = useAuthStore((s) => s.wizardStep);
 
+  const fetchAll = useAppStore((s) => s.fetchAll);
+  const initRealtime = useAppStore((s) => s.initRealtime);
+  const destroyRealtime = useAppStore((s) => s.destroyRealtime);
+
   // Initialize auth on mount, clean up listener on unmount
   useEffect(() => {
     const cleanup = initAuth();
     return cleanup;
   }, []);
+
+  // Initialize app store data and realtime listener on Web
+  useEffect(() => {
+    if (session?.user?.id) {
+      fetchAll();
+      initRealtime(session.user.id);
+    }
+    return () => {
+      destroyRealtime();
+    };
+  }, [session, fetchAll, initRealtime, destroyRealtime]);
 
   // Navigation guard — runs in useEffect, never during render
   useEffect(() => {

@@ -83,3 +83,15 @@ export const GmailIcon = ({ size = 20 }) => (
     <Path fill="#fbc02d" d="M45 12.298V16.2l-10 7.5V11.2l3.124-2.341C38.868 8.301 39.772 8 40.702 8 43.076 8 45 9.924 45 12.298z" />
   </Svg>
 );
+
+export const IconStar = ({ starred, size = 16 }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={starred ? '#F59E0B' : 'none'}>
+    <Path
+      d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+      stroke={starred ? '#D97706' : '#9CA3AF'}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);

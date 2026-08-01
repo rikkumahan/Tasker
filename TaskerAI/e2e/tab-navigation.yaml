@@ -1,0 +1,12 @@
+appId: host.exp.exponent
+---
+- tapOn: "Tasks"
+- assertVisible: "All actionable items from your threads"
+- tapOn: "Waiting"
+- assertVisible: "Threads requiring your response"
+- tapOn: "Projects"
+- assertVisible: "Your active context tracks"
+- tapOn: "People"
+- assertVisible: "Contacts from your threads"
+- tapOn: "Today"
+- assertVisible: "Today"

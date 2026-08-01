@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, RefreshControl, ActivityIndicator, Alert, Platform } from 'react-native';
 import { useTabBarPadding } from '../../hooks/useTabBarPadding';
 import AIPanel, { AIPanelProvider } from '../../components/AIPanel';
 import { DailyBriefHero, TopPriorities, PeopleWaiting } from '../../components/DashboardCards';
@@ -8,6 +8,7 @@ import { T } from '../../components/Theme';
 import { IconSparkle } from '../../components/Icons';
 import useAuthStore from '../../store/authStore';
 import useAppStore from '../../store/appStore';
+import { supabase } from '../../lib/supabase';
 
 const dateString = new Date().toLocaleDateString('en-US', {
   weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
@@ -33,7 +34,7 @@ export default function TodayScreen() {
   const tabBarPadding = useTabBarPadding();
 
   const session = useAuthStore(s => s.session);
-  const { threads, loading, refreshing, fetchAll } = useAppStore();
+  const { threads, loading, refreshing, fetchAll, toggleStar } = useAppStore();
 
   const priorities = useMemo(() => {
     return threads.filter(t => t.priority === 'urgent' || t.priority === 'high').slice(0, 5);
@@ -88,6 +89,31 @@ export default function TodayScreen() {
     fetchAll(true);
   }, [fetchAll]);
 
+  const [syncing, setSyncing] = useState(false);
+
+  const handleSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await supabase.functions.invoke('sync');
+      await fetchAll(true);
+      if (Platform.OS === 'web') {
+        alert('Sync completed successfully.');
+      } else {
+        Alert.alert('Sync Successful', 'Your inbox is now up to date.');
+      }
+    } catch (e) {
+      console.error('[TodayScreen sync error]:', e);
+      if (Platform.OS === 'web') {
+        alert('Failed to start sync. Please try again.');
+      } else {
+        Alert.alert('Sync Failed', 'Failed to start sync. Please try again.');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const userName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'User';
 
   if (loading && threads.length === 0) {
@@ -104,7 +130,7 @@ export default function TodayScreen() {
         <UnifiedPageHeader
           title="Today"
           subtitle={dateString}
-          rightActions={<TodayActions onSync={handleRefresh} syncing={refreshing} />}
+          rightActions={<TodayActions onSync={handleSync} syncing={syncing} />}
         />
 
         {/* ── Scrollable Content ── */}
@@ -122,7 +148,7 @@ export default function TodayScreen() {
           }
         >
           <DailyBriefHero metrics={metrics} onRefresh={handleRefresh} userName={userName} />
-          <TopPriorities selectedId={selectedId} onSelect={handleSelect} data={priorities} />
+          <TopPriorities selectedId={selectedId} onSelect={handleSelect} data={priorities} onToggleStar={toggleStar} />
           <PeopleWaiting data={formattedWaiting} />
         </ScrollView>
 

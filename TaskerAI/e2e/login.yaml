@@ -1,0 +1,23 @@
+appId: host.exp.exponent
+---
+- launchApp
+- tapOn:
+    text: "Connect"
+- tapOn:
+    text: "Use another account"
+- tapOn:
+    text: "Email or phone"
+- inputText: ${EMAIL}
+- tapOn: "Next"
+- tapOn:
+    text: "Enter your password"
+    optional: true
+- inputText: ${PASSWORD}
+- tapOn: "Next"
+- tapOn:
+    text: "Continue"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- assertVisible: "Today"

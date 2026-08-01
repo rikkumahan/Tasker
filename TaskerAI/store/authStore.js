@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
+import useAppStore from './appStore';
 
 const POLL_INTERVAL_MS = 10000;
 const isInProgress = (s) => s === 'queued' || s === 'processing';
@@ -51,14 +52,6 @@ const useAuthStore = create((set, get) => ({
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       set({ session });
-      // Only bootstrap on a FRESH sign-in that carries a live provider_token.
-      // Session restores from AsyncStorage fire SIGNED_IN too, but provider_token is null there.
-      const hasProviderToken = session?.provider_token || get().providerToken;
-      if (event === 'SIGNED_IN') {
-        if (hasProviderToken) {
-          get().bootstrapUser(session);
-        }
-      }
       if (event === 'SIGNED_OUT') {
         set({
           wizardStep: null,
@@ -71,6 +64,9 @@ const useAuthStore = create((set, get) => ({
           isLoading: false,
         });
         get()._clearPoll();
+        // ISSUE-6: clear the previous user's cached threads/contacts/projects
+        // so they can't render under the next signed-in identity.
+        useAppStore.getState().reset();
       }
     });
 
@@ -197,6 +193,8 @@ const useAuthStore = create((set, get) => ({
 
       if (error) {
         console.error('[bootstrapUser] Query returned database error:', error);
+        set({ _bootstrapTriggered: false, errorMessage: 'Failed to retrieve account settings.', isLoading: false });
+        return;
       }
       console.log('[bootstrapUser] user_settings query completed. result:', settings);
 
@@ -230,7 +228,7 @@ const useAuthStore = create((set, get) => ({
       console.log('[bootstrapUser] wizardStep set to lookback in store.');
     } catch (e) {
       console.error('[bootstrapUser] caught exception:', e);
-      set({ errorMessage: 'Failed to check onboarding status.', isLoading: false });
+      set({ _bootstrapTriggered: false, errorMessage: 'Failed to check onboarding status.', isLoading: false });
     }
   },
 
@@ -241,11 +239,17 @@ const useAuthStore = create((set, get) => ({
     set({ _initialSyncDone: true, isLoading: true });
 
     try {
-      const { data: settings } = await supabase
+      const { data: settings, error } = await supabase
         .from('user_settings')
         .select('onboarding_status, onboarding_progress')
         .eq('user_id', session.user.id)
         .maybeSingle();
+
+      if (error) {
+        console.error('[checkSyncHealth] error querying user_settings:', error);
+        set({ _initialSyncDone: false, errorMessage: 'Failed to verify account status.', isLoading: false });
+        return;
+      }
 
       // Completed — skip, never show wizard again
       if (settings?.onboarding_status === 'complete') {

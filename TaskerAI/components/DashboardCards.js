@@ -6,7 +6,7 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { T, PRIORITY_MAP } from './Theme';
 import { METRICS, PRIORITIES, WAITING } from './mockData';
-import { IconSparkle } from './Icons';
+import { IconSparkle, IconStar } from './Icons';
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
 
@@ -116,7 +116,7 @@ export const DailyBriefHero = ({ metrics, onRefresh, userName }) => {
           <View style={[hero.headerRow, isMobile && hero.headerRowMobile]}>
             <View style={{ flex: 1, paddingRight: 16 }}>
               <Text style={hero.eyebrow}>Daily Brief</Text>
-              <Text style={hero.greeting}>Good morning, {userName || 'User'}.</Text>
+              <Text style={hero.greeting}>Hello, {userName || 'User'}.</Text>
               <Text style={hero.subtitle}>{totalAttention} items need your attention today.</Text>
             </View>
             <TouchableOpacity style={hero.refreshBtn} activeOpacity={0.7} onPress={onRefresh}>
@@ -189,7 +189,7 @@ const hero = StyleSheet.create({
 
 const PRIORITY_ACTION = { urgent: 'Reply →', high: 'Review →', medium: 'Review →' };
 
-export const PriorityRow = ({ item, selected, onPress }) => {
+export const PriorityRow = ({ item, selected, onPress, onToggleStar }) => {
   const actionLabel = PRIORITY_ACTION[item.priority] ?? 'View →';
   return (
     <Pressable
@@ -208,7 +208,21 @@ export const PriorityRow = ({ item, selected, onPress }) => {
           <Text style={[row.subject, selected && { fontWeight: '600' }]} numberOfLines={1}>
             {item.subject}
           </Text>
-          <Text style={row.timeAgo}>{item.timeAgo}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {onToggleStar && (
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  onToggleStar(item.id);
+                }}
+                activeOpacity={0.7}
+                style={{ padding: 4, marginRight: -2 }}
+              >
+                <IconStar starred={item.is_starred} size={15} />
+              </TouchableOpacity>
+            )}
+            <Text style={row.timeAgo}>{item.timeAgo}</Text>
+          </View>
         </View>
         <View style={row.bottomRow}>
           <Text style={row.sender}>{item.assignedFrom}</Text>
@@ -257,7 +271,7 @@ const row = StyleSheet.create({
 
 // ─── Top Priorities List ──────────────────────────────────────────────────────
 
-export const TopPriorities = ({ selectedId, onSelect, data }) => {
+export const TopPriorities = ({ selectedId, onSelect, data, onToggleStar }) => {
   const listData = data || PRIORITIES;
   return (
     <View style={lst.wrapper}>
@@ -268,7 +282,12 @@ export const TopPriorities = ({ selectedId, onSelect, data }) => {
       <View style={lst.card}>
         {listData.map((item, idx) => (
           <View key={item.id}>
-            <PriorityRow item={item} selected={selectedId === item.id} onPress={onSelect} />
+            <PriorityRow
+              item={item}
+              selected={selectedId === item.id}
+              onPress={onSelect}
+              onToggleStar={onToggleStar}
+            />
             {idx < listData.length - 1 && <View style={lst.divider} />}
           </View>
         ))}
