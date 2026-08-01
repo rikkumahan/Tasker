@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders } from "../_shared/cors.ts";
 import { getPersonaKey } from "../_shared/keys.ts";
+import { authenticateUser } from "../_shared/auth.ts";
 
 // ═══════════════════════════════════════════════════════════════
 // SYNTHESIZE PROFILE — AI Mind & Evolution Center Edge Function
@@ -12,42 +13,17 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Missing Auth" }), { status: 401, headers: corsHeaders });
-    }
-
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       (Deno.env.get("MY_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) ?? ""
     );
 
-    // ── Resolve user from JWT ──
-    let userId: string | null = null;
-    const tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
-
-    try {
-      const parts = tokenStr.split(".");
-      if (parts.length === 3) {
-        let base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-        const pad = base64.length % 4;
-        if (pad) base64 += "=".repeat(4 - pad);
-        const jsonPayload = decodeURIComponent(
-          atob(base64).split("").map(c => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join("")
-        );
-        const payload = JSON.parse(jsonPayload);
-        if (payload.sub) userId = payload.sub;
-      }
-    } catch { /* manual decode failed, try fallback */ }
-
-    if (!userId) {
-      const { data: authData } = await supabaseAdmin.auth.getUser(tokenStr);
-      if (authData?.user) userId = authData.user.id;
-    }
-
-    if (!userId) {
+    // ── Resolve + verify user from JWT (finding #6: was a duplicate unverified decode) ──
+    const user = await authenticateUser(req, supabaseAdmin);
+    if (!user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
     }
+    const userId = user.id;
 
     // ── Parse request body ──
     let body: any;
@@ -173,7 +149,8 @@ No markdown, no backticks. JSON only.`;
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        model: "openai/gpt-oss-120b",
+        reasoning_effort: "low",
         messages: [{ role: "user", content: synthesisPrompt }]
       })
     });

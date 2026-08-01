@@ -6,6 +6,7 @@ export interface LLMOptions {
   temperature?: number;
   maxAttempts?: number;
   jsonFormat?: boolean;
+  reasoningEffort?: "low" | "medium" | "high";
 }
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -15,10 +16,11 @@ const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
  */
 export async function callLLM(prompt: string, options: LLMOptions = {}): Promise<string> {
   const {
-    model = "meta-llama/llama-4-scout-17b-16e-instruct",
+    model = "openai/gpt-oss-120b",
     temperature = 0.2,
     maxAttempts = 3,
     jsonFormat = false,
+    reasoningEffort = "low",
   } = options;
 
   let attempts = maxAttempts;
@@ -30,6 +32,7 @@ export async function callLLM(prompt: string, options: LLMOptions = {}): Promise
         model,
         messages: [{ role: "user", content: prompt }],
         temperature,
+        reasoning_effort: reasoningEffort,
       };
 
       if (jsonFormat) {

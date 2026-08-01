@@ -32,7 +32,7 @@ export interface ExtractedActionPayload {
   action_items?: ActionCandidate[];
 }
 
-const ACTION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const ACTION_MODEL = "openai/gpt-oss-120b";
 
 const compactRows = (rows: unknown[], limit = 8) => Array.isArray(rows) ? rows.slice(0, limit) : [];
 

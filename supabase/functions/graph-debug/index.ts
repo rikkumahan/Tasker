@@ -24,19 +24,24 @@ Deno.serve(async (req: Request) => {
     let result;
     switch (action) {
       case "stats":
-        result = await handleStats(supabaseAdmin);
+        result = await handleStats(user, supabaseAdmin);
         break;
       case "list-communities":
-        result = await handleListCommunities(supabaseAdmin);
+        result = await handleListCommunities(user, supabaseAdmin);
         break;
       case "rebuild-communities":
         if (req.method !== "POST") return new Response(JSON.stringify({ error: "Method must be POST" }), { status: 405, headers: corsHeaders });
         result = await handleRebuildCommunities(user, supabaseAdmin);
         break;
       case "neighborhood":
+        // NOTE: currently returns a 500 — get_entity_neighborhood has no p_user_id param yet.
+        // Not a live leak (finding #1's correction), but don't add scoping here until the RPC
+        // itself is migrated to accept/filter by p_user_id — a mismatched param would just be a
+        // different flavor of broken. Tracked, not silently left broken by accident.
         result = await handleNeighborhood(url, supabaseAdmin);
         break;
       case "timeline":
+        // Same caveat as "neighborhood" above — get_entity_timeline has no p_user_id param yet.
         result = await handleTimeline(url, supabaseAdmin);
         break;
       case "extract-sample":
@@ -44,7 +49,7 @@ Deno.serve(async (req: Request) => {
         result = await handleExtractSample(req);
         break;
       case "inspect-node":
-        result = await handleInspectNode(url, supabaseAdmin);
+        result = await handleInspectNode(user, url, supabaseAdmin);
         break;
       default:
         return new Response(JSON.stringify({
@@ -61,7 +66,7 @@ Deno.serve(async (req: Request) => {
   }
 });
 
-async function handleStats(supabaseAdmin: SupabaseClient) {
+async function handleStats(user: AuthenticatedUser, supabaseAdmin: SupabaseClient) {
   const [
     { count: contactsCount },
     { count: projectsCount },
@@ -71,16 +76,16 @@ async function handleStats(supabaseAdmin: SupabaseClient) {
     { count: communitiesCount },
     { count: membersCount }
   ] = await Promise.all([
-    supabaseAdmin.from("contacts").select("*", { count: "exact", head: true }),
-    supabaseAdmin.from("projects").select("*", { count: "exact", head: true }),
-    supabaseAdmin.from("threads").select("*", { count: "exact", head: true }),
-    supabaseAdmin.from("emails").select("*", { count: "exact", head: true }),
-    supabaseAdmin.from("graph_edges").select("*", { count: "exact", head: true }),
-    supabaseAdmin.from("community_reports").select("*", { count: "exact", head: true }),
-    supabaseAdmin.from("community_members").select("*", { count: "exact", head: true })
+    supabaseAdmin.from("contacts").select("*", { count: "exact", head: true }).eq("user_id", user.id),
+    supabaseAdmin.from("projects").select("*", { count: "exact", head: true }).eq("user_id", user.id),
+    supabaseAdmin.from("threads").select("*", { count: "exact", head: true }).eq("user_id", user.id),
+    supabaseAdmin.from("emails").select("*", { count: "exact", head: true }).eq("user_id", user.id),
+    supabaseAdmin.from("graph_edges").select("*", { count: "exact", head: true }).eq("user_id", user.id),
+    supabaseAdmin.from("community_reports").select("*", { count: "exact", head: true }).eq("user_id", user.id),
+    supabaseAdmin.from("community_members").select("*", { count: "exact", head: true }).eq("user_id", user.id)
   ]);
 
-  const { data: edgeTypes } = await supabaseAdmin.from("graph_edges").select("relationship_type").limit(500);
+  const { data: edgeTypes } = await supabaseAdmin.from("graph_edges").select("relationship_type").eq("user_id", user.id).limit(500);
   const typeCount: Record<string, number> = {};
   (edgeTypes || []).forEach((e: any) => { typeCount[e.relationship_type] = (typeCount[e.relationship_type] || 0) + 1; });
   const topRelationships = Object.entries(typeCount)
@@ -102,10 +107,11 @@ async function handleStats(supabaseAdmin: SupabaseClient) {
   };
 }
 
-async function handleListCommunities(supabaseAdmin: SupabaseClient) {
+async function handleListCommunities(user: AuthenticatedUser, supabaseAdmin: SupabaseClient) {
   const { data: reports, error } = await supabaseAdmin
     .from("community_reports")
     .select("id, title, summary, rating, rating_explanation, created_at, community_members(count)")
+    .eq("user_id", user.id)
     .order("rating", { ascending: false })
     .limit(20);
 
@@ -183,7 +189,7 @@ async function handleExtractSample(req: Request) {
   };
 }
 
-async function handleInspectNode(url: URL, supabaseAdmin: SupabaseClient) {
+async function handleInspectNode(user: AuthenticatedUser, url: URL, supabaseAdmin: SupabaseClient) {
   const name = url.searchParams.get("name");
   const id = url.searchParams.get("id");
 
@@ -194,10 +200,10 @@ async function handleInspectNode(url: URL, supabaseAdmin: SupabaseClient) {
 
   if (id) {
     const [contactRes, projectRes, threadRes, taskRes] = await Promise.all([
-      supabaseAdmin.from("contacts").select("*").eq("id", id).maybeSingle(),
-      supabaseAdmin.from("projects").select("*").eq("id", id).maybeSingle(),
-      supabaseAdmin.from("threads").select("*").eq("id", id).maybeSingle(),
-      supabaseAdmin.from("tasks").select("*").eq("id", id).maybeSingle()
+      supabaseAdmin.from("contacts").select("*").eq("id", id).eq("user_id", user.id).maybeSingle(),
+      supabaseAdmin.from("projects").select("*").eq("id", id).eq("user_id", user.id).maybeSingle(),
+      supabaseAdmin.from("threads").select("*").eq("id", id).eq("user_id", user.id).maybeSingle(),
+      supabaseAdmin.from("tasks").select("*").eq("id", id).eq("user_id", user.id).maybeSingle()
     ]);
 
     if (contactRes.data) { entity = contactRes.data; type = "CONTACT"; }
@@ -206,10 +212,10 @@ async function handleInspectNode(url: URL, supabaseAdmin: SupabaseClient) {
     else if (taskRes.data) { entity = taskRes.data; type = "TASK"; }
   } else if (name) {
     const [contactRes, projectRes, threadRes, taskRes] = await Promise.all([
-      supabaseAdmin.from("contacts").select("*").ilike("name", name).limit(1),
-      supabaseAdmin.from("projects").select("*").ilike("name", name).limit(1),
-      supabaseAdmin.from("threads").select("*").ilike("subject", name).limit(1),
-      supabaseAdmin.from("tasks").select("*").ilike("title", name).limit(1)
+      supabaseAdmin.from("contacts").select("*").ilike("name", name).eq("user_id", user.id).limit(1),
+      supabaseAdmin.from("projects").select("*").ilike("name", name).eq("user_id", user.id).limit(1),
+      supabaseAdmin.from("threads").select("*").ilike("subject", name).eq("user_id", user.id).limit(1),
+      supabaseAdmin.from("tasks").select("*").ilike("title", name).eq("user_id", user.id).limit(1)
     ]);
 
     if (contactRes.data?.length) { entity = contactRes.data[0]; type = "CONTACT"; }
@@ -223,6 +229,7 @@ async function handleInspectNode(url: URL, supabaseAdmin: SupabaseClient) {
   const { data: edges } = await supabaseAdmin
     .from("graph_edges")
     .select("*")
+    .eq("user_id", user.id)
     .or(`source_id.eq.${entity.id},target_id.eq.${entity.id}`);
 
   const neighborIds = (edges || []).map((e: any) => e.source_id === entity.id ? e.target_id : e.source_id);
@@ -230,10 +237,10 @@ async function handleInspectNode(url: URL, supabaseAdmin: SupabaseClient) {
   const [nContacts, nProjects, nThreads, nTasks] = neighborIds.length === 0
     ? [{ data: [] }, { data: [] }, { data: [] }, { data: [] }]
     : await Promise.all([
-        supabaseAdmin.from("contacts").select("id, name").in("id", neighborIds),
-        supabaseAdmin.from("projects").select("id, name").in("id", neighborIds),
-        supabaseAdmin.from("threads").select("id, subject").in("id", neighborIds),
-        supabaseAdmin.from("tasks").select("id, title").in("id", neighborIds)
+        supabaseAdmin.from("contacts").select("id, name").in("id", neighborIds).eq("user_id", user.id),
+        supabaseAdmin.from("projects").select("id, name").in("id", neighborIds).eq("user_id", user.id),
+        supabaseAdmin.from("threads").select("id, subject").in("id", neighborIds).eq("user_id", user.id),
+        supabaseAdmin.from("tasks").select("id, title").in("id", neighborIds).eq("user_id", user.id)
       ]);
 
   const idToNameMap = new Map<string, string>();

@@ -1,6 +1,8 @@
 import { prePassRedact } from "./pii.ts";
 import { callLLM } from "./llm.ts";
 
+const GRAPH_MODEL = "openai/gpt-oss-120b";
+
 export const ENTITY_TYPES = [
   "PERSON", "ORGANIZATION", "PROJECT", "TASK", "EVENT", "DOCUMENT", "COMMITMENT", "TOPIC",
 ] as const;
@@ -199,7 +201,7 @@ export class GraphRAGExtractor {
     const prompt = buildGraphExtractionPrompt(redactedText);
 
     const responseText = await callLLM(prompt, {
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      model: GRAPH_MODEL,
       temperature: 0,
     });
 
@@ -663,7 +665,7 @@ ${relationsText}
 
 OUTPUT:`;
 
-    const responseText = await callLLM(prompt, { model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0.2, jsonFormat: true });
+    const responseText = await callLLM(prompt, { model: GRAPH_MODEL, temperature: 0.2, jsonFormat: true });
 
     if (responseText) {
       try {

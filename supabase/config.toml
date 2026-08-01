@@ -1,6 +1,12 @@
 [functions.webhook_ingest]
 verify_jwt = false
 
+[functions.background_worker]
+verify_jwt = false
+# Safe: takes zero parameters, only drains already-enqueued/already-scoped sync_queue rows.
+# Must stay unauthenticated so the tasker-queue-pulse cron failsafe (jobid 3) can reach it
+# without a service-role Authorization header (ISSUE-5 in TaskerAI/e2e/ISSUES.md).
+
 
 [functions.delete-account]
 enabled = true
