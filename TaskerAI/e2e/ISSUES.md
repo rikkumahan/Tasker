@@ -40,6 +40,15 @@ tapping the card body itself, not verified).
 should `numberOfLines={1}` + `ellipsizeMode` with a fixed/flex-shrink-0 width
 reserved for the badge + action button, not the reverse.
 
+**Status:** ✅ Fixed — actual layout lives in `TaskerAI/components/DashboardCards.js`'s
+`PriorityRow` (not `TaskList.js` as guessed above — `TaskList.js` just renders
+`PriorityRow`). RN/Yoga defaults `flexShrink` to `0` (unlike web CSS), so the
+sender `Text` had no shrink boundary and took its full intrinsic width,
+pushing the badge and button past the row's laid-out bounds entirely — matching
+the evidence that the button wasn't just clipped but missing from the tree.
+Fix: `sender` gets `flex: 1` + `minWidth: 0` + `numberOfLines={1}`; badge and
+action button get `flexShrink: 0` so their space is always reserved.
+
 ## ISSUE-2: Raw email header artifacts (literal quotes) shown as contact/sender name
 
 **Screens:** Tasks tab (task card) AND People tab (contact list) — confirmed in both
@@ -66,6 +75,15 @@ aren't stripped before storing the contact's display name).
 and persisted as a contact/person name (likely `supabase/functions/_shared/`
 sync/extraction code, and wherever the `people`/contacts table is
 populated) — strip surrounding quotes before storing/displaying.
+
+**Status:** ✅ Fixed — root cause confirmed in `supabase/functions/_shared/graph.ts`'s
+`ingestEmailToGraph`: the `From:` header regex captured the RFC 5322 quoted
+display-name portion (Gmail quotes names containing `[`/`]` and other special
+characters) including the surrounding quotes, which landed verbatim in
+`contacts.name` via `ingest_graphrag_payload`. Parsing extracted into a pure
+`parseSenderHeader()` that strips one layer of surrounding double-quotes.
+Regression tests: `supabase/functions/tests/test-graph-ingest.ts` (quoted,
+unquoted, and no-angle-brackets fallback paths).
 
 ## ISSUE-3: Project descriptions leak raw LLM/graph-extraction output (truncated JSON or prompt fragment)
 
