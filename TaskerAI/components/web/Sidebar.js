@@ -242,8 +242,8 @@ export default function Sidebar() {
           <Text style={s.avatarText}>{initials}</Text>
         </View>
         <View style={s.userInfo}>
-          <Text style={s.userName}>{fullName}</Text>
-          <Text style={s.userEmail}>View Profile ({userEmail})</Text>
+          <Text style={s.userName} numberOfLines={1} ellipsizeMode="tail">{fullName}</Text>
+          <Text style={s.userEmail} numberOfLines={1} ellipsizeMode="tail">View Profile ({userEmail})</Text>
         </View>
       </Pressable>
     </View>

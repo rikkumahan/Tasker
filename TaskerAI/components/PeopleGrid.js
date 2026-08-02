@@ -184,7 +184,7 @@ const PersonDetailModal = ({ person, visible, onClose }) => {
           {/* Email */}
           <View style={md.row}>
             <Text style={md.label}>Email</Text>
-            <Text style={md.value} numberOfLines={1}>{person.email}</Text>
+            <Text style={md.value} numberOfLines={1} ellipsizeMode="tail">{person.email}</Text>
           </View>
 
           {/* Divider */}
@@ -280,6 +280,7 @@ const md = StyleSheet.create({
     fontWeight: '500',
     color: T.accent,
     flex: 1,
+    minWidth: 0, // lets numberOfLines={1} actually truncate instead of overflowing past the row
     textAlign: 'right',
     marginLeft: T.sp4,
   },
