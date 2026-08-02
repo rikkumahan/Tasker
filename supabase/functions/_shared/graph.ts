@@ -8,6 +8,11 @@ export const ENTITY_TYPES = [
 ] as const;
 export type EntityType = typeof ENTITY_TYPES[number];
 
+// Entity types that ingest_graphrag_payload actually vector-matches (PERSON/ORGANIZATION →
+// contacts.embedding, TASK → action_items.embedding). Everything else resolves by exact
+// name match only, so generating an embedding for it is wasted local-model work.
+export const EMBEDDED_ENTITY_TYPES = new Set<EntityType>(["PERSON", "ORGANIZATION", "TASK"]);
+
 export const RELATION_TYPES = [
   "WORKS_FOR", "ASSIGNED_TO", "PART_OF", "DISCUSSES", "ATTENDS", "REFERENCES", "COMMITS_TO", "BLOCKED_BY",
 ] as const;
@@ -469,9 +474,16 @@ export class GraphRAGStore {
 
     const senderEmbedding = await getEmbedding(`${senderName} ${senderEmail}`);
     const emailEmbedding = await getEmbedding(`${normSubject} ${normBody.substring(0, 1000)}`);
+    // ingest_graphrag_payload only vector-matches PERSON/ORGANIZATION (against contacts.embedding)
+    // and TASK (against action_items.embedding). PROJECT/TOPIC/EVENT/DOCUMENT/COMMITMENT resolve by
+    // exact name match into `projects`, which has no embedding column — embedding those is wasted work.
     const entityEmbeddings: number[][] = [];
     for (const ent of entities) {
-      entityEmbeddings.push(await getEmbedding(`${ent.name} ${ent.description || ""}`.trim()));
+      entityEmbeddings.push(
+        EMBEDDED_ENTITY_TYPES.has(ent.entityType)
+          ? await getEmbedding(`${ent.name} ${ent.description || ""}`.trim())
+          : []
+      );
     }
 
     const isValidVec = (v: number[]) => v.some(x => x !== 0);

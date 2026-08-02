@@ -1,8 +1,22 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { runLouvain, GraphRAGStore } from "../_shared/graph.ts";
+import { runLouvain, GraphRAGStore, ENTITY_TYPES, EMBEDDED_ENTITY_TYPES } from "../_shared/graph.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// Guards the entity-embedding skip optimization: ingest_graphrag_payload (migration 017) only
+// vector-matches PERSON/ORGANIZATION/TASK. If someone adds a new ENTITY_TYPE or changes which
+// types the RPC vector-matches without updating this set, embeddings silently go to waste again
+// (or get skipped for a type that now needs them) with no error to signal it.
+Deno.test("EMBEDDED_ENTITY_TYPES matches the types ingest_graphrag_payload actually vector-matches", () => {
+  const expected = new Set(["PERSON", "ORGANIZATION", "TASK"]);
+  for (const t of ENTITY_TYPES) {
+    const shouldEmbed = expected.has(t);
+    if (EMBEDDED_ENTITY_TYPES.has(t) !== shouldEmbed) {
+      throw new Error(`EMBEDDED_ENTITY_TYPES mismatch for ${t}: expected ${shouldEmbed}`);
+    }
+  }
+});
 
 // 1. Unit Test for Louvain clustering (offline, no DB or network dependency)
 Deno.test("Louvain clustering partitions simple cliques correctly", () => {
