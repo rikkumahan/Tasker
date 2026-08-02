@@ -1,8 +1,40 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { runLouvain, GraphRAGStore, ENTITY_TYPES, EMBEDDED_ENTITY_TYPES } from "../_shared/graph.ts";
+import { runLouvain, GraphRAGStore, ENTITY_TYPES, EMBEDDED_ENTITY_TYPES, parseGraphTriplets } from "../_shared/graph.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// e2e/ISSUES.md ISSUE-3: project descriptions ending in a corrupted fragment like
+// `)\n## ("entity`. Root-caused to a pre-refactor triplet parser that used one greedy regex
+// over the whole raw LLM response instead of splitting on "##" first, so a tuple's own closing
+// ")" wasn't always treated as its terminator when followed by whitespace rather than "##"
+// directly — the description swallowed the raw text of every following tuple. The current
+// "##"-split parser can no longer produce this on its own, but these tests cover the
+// defense-in-depth guard (RAW_TUPLE_LEAK) added to `parseEntityLine`/`parseRelationshipLine`
+// so a description containing leaked tuple syntax is always dropped, not persisted.
+Deno.test("parseGraphTriplets drops an entity whose description leaks raw tuple syntax", () => {
+  // Simulates the shape of the corrupted rows found live in `projects.description`: a
+  // truncated/malformed follow-on tuple whose text ended up inside a prior chunk.
+  const raw = '("entity"|Daily Sync|EVENT|Daily Sync meeting, Rithvik, Tuesday 16 Jun 2026 2:15pm - 2:30pm, India Standard Time - Kolkata)\n## ("entity';
+  const result = parseGraphTriplets(raw);
+  if (result.entities.some((e) => e.description.includes("##") || e.description.includes('("entity'))) {
+    throw new Error(`Leaked raw tuple syntax survived into a parsed description: ${JSON.stringify(result.entities)}`);
+  }
+});
+
+Deno.test("parseGraphTriplets parses clean back-to-back entities without cross-contamination", () => {
+  const raw = '("entity"|Maria|PERSON|Recipient asked to send the roadmap doc)\n##\n("entity"|Platform team|ORGANIZATION|Team that should receive the roadmap doc)';
+  const result = parseGraphTriplets(raw);
+  if (result.entities.length !== 2) {
+    throw new Error(`Expected 2 clean entities, got ${result.entities.length}: ${JSON.stringify(result.entities)}`);
+  }
+  if (result.entities[0].description !== "Recipient asked to send the roadmap doc") {
+    throw new Error(`First entity description corrupted: ${JSON.stringify(result.entities[0].description)}`);
+  }
+  if (result.droppedCount !== 0) {
+    throw new Error(`Expected no drops for well-formed input, got ${result.droppedCount}`);
+  }
+});
 
 // Guards the entity-embedding skip optimization: ingest_graphrag_payload (migration 017) only
 // vector-matches PERSON/ORGANIZATION/TASK. If someone adds a new ENTITY_TYPE or changes which
