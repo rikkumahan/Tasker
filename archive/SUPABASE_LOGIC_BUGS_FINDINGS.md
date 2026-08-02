@@ -199,7 +199,7 @@ No `PERFORM assert_user_scope(...)` anywhere in the live function body, unlike a
 **Actual:** the guard existed in the tracked source and was silently dropped by an untracked migration.
 **Fix:** add `PERFORM assert_user_scope(p_user_id);` back (restore the tracked-source behavior), and commit the missing `extend_graph_context_2hop` migration file to close the drift.
 
-**Status:** ✅ Fixed (staged) — `supabase/migrations/20260717120100_restore_graph_context_user_scope.sql` re-creates the live 2-hop function with the guard restored (verified against the live `pg_get_functiondef` output before writing it, so the 2-hop logic itself is preserved exactly). Not yet applied to the live DB — needs `apply_migration`/`supabase db push`, see deploy checklist.
+**Status:** ✅ Fixed and applied live — `supabase/migrations/20260717120100_restore_graph_context_user_scope.sql` re-creates the live 2-hop function with the guard restored (verified against the live `pg_get_functiondef` output before writing it, so the 2-hop logic itself is preserved exactly). Applied 2026-08-02; post-deploy check confirms unscoped calls now raise `P0001: p_user_id does not match authenticated user`.
 
 ### 17. 🟠 High — job-queue primitives (`claim_next_job`, `reset_stalled_jobs`, `reset_stuck_queue_jobs`) are EXECUTE-granted to `anon`
 
@@ -211,7 +211,7 @@ No `PERFORM assert_user_scope(...)` anywhere in the live function body, unlike a
 **Actual:** `anon` and `authenticated` both have EXECUTE.
 **Fix:** `REVOKE EXECUTE ON FUNCTION claim_next_job(), reset_stalled_jobs(), reset_stuck_queue_jobs() FROM anon, authenticated;`
 
-**Status:** ✅ Fixed (staged) — `supabase/migrations/20260717120000_revoke_anon_queue_rpcs.sql`. RED re-confirmed live via `has_function_privilege('anon', ..., 'EXECUTE')` on 2026-07-17 before writing the fix (all 3 returned `true`). Not yet applied to the live DB, see deploy checklist.
+**Status:** ✅ Fixed and applied live — `supabase/migrations/20260717120000_revoke_anon_queue_rpcs.sql`. RED re-confirmed live via `has_function_privilege('anon', ..., 'EXECUTE')` on 2026-07-17 before writing the fix (all 3 returned `true`). Applied 2026-08-02; post-deploy check confirms `anon` and `authenticated` both now return `false` for EXECUTE on all three functions.
 
 ### 18. 🟡 Medium — `reset_stalled_jobs` measures staleness from `created_at`, not `updated_at`; can resurrect a job that just started processing
 
