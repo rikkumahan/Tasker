@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.svg" alt="TaskerAI logo" width="320" />
+</p>
+
 # Tasker: Corporate Email GraphRAG Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

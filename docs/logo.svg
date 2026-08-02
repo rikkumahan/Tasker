@@ -1,0 +1,25 @@
+<svg width="360" height="120" viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TaskerAI logo">
+  <title>TaskerAI</title>
+
+  <!-- Background card — mark must sit on white or #111827 only, per docs/design-system.md "Logo Rules" -->
+  <rect x="0.5" y="0.5" width="359" height="119" rx="16" fill="#ffffff" stroke="#E5E7EB"/>
+
+  <!-- Dot Grid T mark — official coords from docs/design-system.md (viewBox 0 0 240 240, cols 60/120/180, rows 82/132/178, r:16) -->
+  <g transform="translate(24,20) scale(0.3333)">
+    <circle cx="60" cy="82" r="16" fill="#111827"/>
+    <circle cx="120" cy="82" r="16" fill="#111827"/>
+    <circle cx="180" cy="82" r="16" fill="#111827"/>
+    <circle cx="120" cy="132" r="16" fill="#111827"/>
+    <circle cx="120" cy="178" r="16" fill="#111827"/>
+
+    <circle cx="60" cy="132" r="16" fill="none" stroke="#111827" stroke-width="2.5" opacity="0.35"/>
+    <circle cx="180" cy="132" r="16" fill="none" stroke="#111827" stroke-width="2.5" opacity="0.35"/>
+    <circle cx="60" cy="178" r="16" fill="none" stroke="#111827" stroke-width="2.5" opacity="0.35"/>
+    <circle cx="180" cy="178" r="16" fill="none" stroke="#111827" stroke-width="2.5" opacity="0.35"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="136" y="70" font-family="'Plus Jakarta Sans', 'Segoe UI', Arial, sans-serif" font-size="36" font-weight="700" letter-spacing="-0.9">
+    <tspan fill="#111827">Tasker</tspan><tspan fill="#F2673C">AI</tspan>
+  </text>
+</svg>
