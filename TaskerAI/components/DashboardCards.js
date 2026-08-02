@@ -225,8 +225,10 @@ export const PriorityRow = ({ item, selected, onPress, onToggleStar }) => {
           </View>
         </View>
         <View style={row.bottomRow}>
-          <Text style={row.sender}>{item.assignedFrom}</Text>
-          <PriorityBadge level={item.priority} />
+          <Text style={row.sender} numberOfLines={1} ellipsizeMode="tail">{item.assignedFrom}</Text>
+          <View style={row.badgeSlot}>
+            <PriorityBadge level={item.priority} />
+          </View>
           <TouchableOpacity
             onPress={() => onPress(item.id)}
             style={[row.actionBtn, selected && row.actionBtnSelected]}
@@ -259,10 +261,15 @@ const row = StyleSheet.create({
   subject:    { flex: 1, fontSize: T.textSm, fontWeight: '500', color: T.fg },
   timeAgo:    { fontSize: T.textXs, color: T.muted, fontWeight: '500', flexShrink: 0 },
   bottomRow:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sender:     { fontSize: T.textXs, color: T.muted },
+  // flex: 1 + minWidth: 0 lets sender shrink/truncate instead of overflowing the row and
+  // pushing badgeSlot/actionBtn past the edge (Yoga gives siblings flexShrink:0 by default,
+  // so without this the sender's intrinsic text width wins and squeezes/evicts them).
+  sender:     { fontSize: T.textXs, color: T.muted, flex: 1, minWidth: 0 },
+  badgeSlot:  { flexShrink: 0 },
   actionBtn: {
     marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 4,
     backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, borderRadius: 6,
+    flexShrink: 0,
   },
   actionBtnSelected: { backgroundColor: T.accent, borderColor: T.accent },
   actionText:        { fontSize: T.textXs, fontWeight: '600', color: T.fg2 },

@@ -364,9 +364,37 @@ export function runLouvain(nodes: string[], edges: LouvainEdge[]): Record<string
   return nodeToCommunity;
 }
 
+// Strips one layer of surrounding double-quotes from an RFC 5322 display name
+// (e.g. `"Bh - Seethanagaram [Union Bank Of India]"` -> `Bh - Seethanagaram [Union Bank Of India]`).
+// Quoted display-name headers are common when the name contains special characters like `[`/`]`,
+// and Gmail's raw `From:` header keeps the quotes. Only strips one matching pair, so a name that
+// legitimately starts and ends with an internal quote character isn't mangled beyond that one layer.
+function stripSurroundingQuotes(name: string): string {
+  if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
+    return name.slice(1, -1).trim();
+  }
+  return name;
+}
+
+// Parses a raw `From:` header string into a display name + email address.
+// Pure function (no DB/LLM) so it's unit-testable in isolation from ingestEmailToGraph.
+export function parseSenderHeader(senderStr: string): { name: string; email: string } {
+  let name = senderStr;
+  let email = `${senderStr.toLowerCase().replace(/[^a-z0-9]/g, "")}@placeholder.tasker.local`;
+  const emailMatch = senderStr.match(/^(.*?)\s*<([^>]+)>/);
+  if (emailMatch) {
+    name = emailMatch[1].trim();
+    email = emailMatch[2].trim().toLowerCase();
+  } else if (senderStr.includes("@")) {
+    name = senderStr.split("@")[0].trim();
+    email = senderStr.trim().toLowerCase();
+  }
+  return { name: stripSurroundingQuotes(name), email };
+}
+
 export class GraphRAGStore {
   private supabase: any;
-  
+
   constructor(supabaseClient: any) {
     this.supabase = supabaseClient;
   }
@@ -458,16 +486,7 @@ export class GraphRAGStore {
     const normBody = raw.body || "";
 
     const senderStr = raw.sender || "unknown";
-    let senderName = senderStr;
-    let senderEmail = `${senderStr.toLowerCase().replace(/[^a-z0-9]/g, "")}@placeholder.tasker.local`;
-    const emailMatch = senderStr.match(/^(.*?)\s*<([^>]+)>/);
-    if (emailMatch) {
-      senderName = emailMatch[1].trim();
-      senderEmail = emailMatch[2].trim().toLowerCase();
-    } else if (senderStr.includes("@")) {
-      senderName = senderStr.split("@")[0].trim();
-      senderEmail = senderStr.trim().toLowerCase();
-    }
+    const { name: senderName, email: senderEmail } = parseSenderHeader(senderStr);
 
     const extractor = new GraphRAGExtractor();
     const { entities, relationships } = await extractor.extractFromEmail(normBody, normSubject);

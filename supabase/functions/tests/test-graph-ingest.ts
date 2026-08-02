@@ -1,8 +1,41 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { runLouvain, GraphRAGStore, ENTITY_TYPES, EMBEDDED_ENTITY_TYPES } from "../_shared/graph.ts";
+import { runLouvain, GraphRAGStore, ENTITY_TYPES, EMBEDDED_ENTITY_TYPES, parseSenderHeader } from "../_shared/graph.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// ISSUE-2 (e2e/ISSUES.md): raw `From:` headers with a quoted display name (RFC 5322 allows this,
+// and Gmail commonly produces it for names containing [ ] or other special chars) were storing the
+// literal surrounding quotes as the contact's name. Covers the quoted/unquoted/no-angle-brackets paths.
+Deno.test("parseSenderHeader strips surrounding quotes from a quoted display name", () => {
+  const { name, email } = parseSenderHeader('"Bh - Seethanagaram [Union Bank Of India]" <actual@email.com>');
+  if (name !== "Bh - Seethanagaram [Union Bank Of India]") {
+    throw new Error(`Expected quotes stripped, got: ${JSON.stringify(name)}`);
+  }
+  if (email !== "actual@email.com") {
+    throw new Error(`Expected email parsed, got: ${JSON.stringify(email)}`);
+  }
+});
+
+Deno.test("parseSenderHeader leaves an unquoted display name untouched", () => {
+  const { name, email } = parseSenderHeader("John Smith <john@example.com>");
+  if (name !== "John Smith") {
+    throw new Error(`Expected unquoted name unchanged, got: ${JSON.stringify(name)}`);
+  }
+  if (email !== "john@example.com") {
+    throw new Error(`Expected email parsed, got: ${JSON.stringify(email)}`);
+  }
+});
+
+Deno.test("parseSenderHeader falls back to the local-part when there are no angle brackets", () => {
+  const { name, email } = parseSenderHeader("jane.doe@example.com");
+  if (name !== "jane.doe") {
+    throw new Error(`Expected local-part fallback, got: ${JSON.stringify(name)}`);
+  }
+  if (email !== "jane.doe@example.com") {
+    throw new Error(`Expected email to equal the raw sender string, got: ${JSON.stringify(email)}`);
+  }
+});
 
 // Guards the entity-embedding skip optimization: ingest_graphrag_payload (migration 017) only
 // vector-matches PERSON/ORGANIZATION/TASK. If someone adds a new ENTITY_TYPE or changes which
