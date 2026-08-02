@@ -179,9 +179,10 @@ const useAppStore = create((set, get) => ({
       if (error) throw error;
     } catch (err) {
       console.error('[appStore markRead error]:', err);
-      // Revert optimistic update on failure
+      // Revert optimistic update on failure — re-read current state so this
+      // doesn't stomp any other update that landed while the request was in flight.
       set({
-        threads: threads.map(t => t.id === threadId ? { ...t, is_read: false } : t),
+        threads: get().threads.map(t => t.id === threadId ? { ...t, is_read: false } : t),
       });
     }
   },
@@ -205,9 +206,10 @@ const useAppStore = create((set, get) => ({
       if (error) throw error;
     } catch (err) {
       console.error('[appStore toggleStar error]:', err);
-      // Revert optimistic update on failure
+      // Revert optimistic update on failure — re-read current state so this
+      // doesn't stomp any other update that landed while the request was in flight.
       set({
-        threads: threads.map(t => t.id === threadId ? { ...t, is_starred: !nextStarred } : t),
+        threads: get().threads.map(t => t.id === threadId ? { ...t, is_starred: !nextStarred } : t),
       });
     }
   },

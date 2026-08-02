@@ -35,14 +35,21 @@ Deno.serve(async (_req: Request) => {
   let failed = 0;
 
   for (const u of users ?? []) {
-    const refreshToken = u.gmail_token?.refresh_token;
-    if (!refreshToken) { failed++; continue; }
+    try {
+      const refreshToken = u.gmail_token?.refresh_token;
+      if (!refreshToken) { failed++; continue; }
 
-    const accessToken = await refreshGmailToken(u.user_id, refreshToken, supabaseAdmin);
-    if (!accessToken) { failed++; continue; } // refreshGmailToken already logs/marks REVOKED on invalid_grant
+      const accessToken = await refreshGmailToken(u.user_id, refreshToken, supabaseAdmin);
+      if (!accessToken) { failed++; continue; } // refreshGmailToken already logs/marks REVOKED on invalid_grant
 
-    await registerGmailWatch(accessToken, supabaseAdmin, u.user_id);
-    renewed++;
+      await registerGmailWatch(accessToken, supabaseAdmin, u.user_id);
+      renewed++;
+    } catch (e: any) {
+      // One user's network blip shouldn't skip every remaining user in the batch —
+      // it self-heals next day either way, but no reason to lose the rest of today's run.
+      failed++;
+      console.error(`[renew_gmail_watches] user ${u.user_id} failed:`, e.message);
+    }
   }
 
   return new Response(JSON.stringify({ success: true, renewed, failed }), {
