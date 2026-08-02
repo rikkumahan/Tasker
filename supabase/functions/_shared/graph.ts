@@ -127,13 +127,25 @@ ${redactedText}
 OUTPUT:`;
 }
 
+// e2e/ISSUES.md ISSUE-3: a pre-refactor version of this parser (`parseTriplets`, before commit
+// 9c87f6e) used a single greedy `.match(/\((?:[^)]|\)[^#])*\)/g)` over the whole raw response
+// instead of splitting on "##" first. Because ")" followed by whitespace (the model's actual
+// output shape — "##" on its own line) didn't count as a terminator, that regex merged a valid
+// entity with the raw text of every tuple after it, leaking "...)\n## (\"entity" fragments straight
+// into `projects.description` (confirmed live for 16 rows, all created before the refactor).
+// The "##"-split approach below can no longer produce that on its own, but this check is cheap
+// insurance against any future parsing regression reintroducing a raw-tuple leak.
+const RAW_TUPLE_LEAK = /##|\(\s*"?(entity|relationship)"?\s*\|/i;
+
 function parseEntityLine(line: string): EntityTriplet | null {
   const match = line.match(/^\("entity"\|(.+?)\|(.+?)\|(.+)\)$/);
   if (!match) return null;
   const [, name, rawType, description] = match;
   const entityType = rawType.trim().toUpperCase() as EntityType;
   if (!ENTITY_TYPES.includes(entityType)) return null;
-  return { type: "entity", name: name.trim(), entityType, description: description.trim() };
+  const cleanDescription = description.trim();
+  if (RAW_TUPLE_LEAK.test(cleanDescription) || RAW_TUPLE_LEAK.test(name)) return null;
+  return { type: "entity", name: name.trim(), entityType, description: cleanDescription };
 }
 
 function parseRelationshipLine(line: string): RelationshipTriplet | null {
@@ -144,12 +156,14 @@ function parseRelationshipLine(line: string): RelationshipTriplet | null {
   if (!RELATION_TYPES.includes(relationType)) return null;
   const strength = Number(rawStrength);
   if (Number.isNaN(strength) || strength < 1 || strength > 10) return null;
+  const cleanDescription = description.trim();
+  if (RAW_TUPLE_LEAK.test(cleanDescription)) return null;
   return {
     type: "relationship",
     source: source.trim(),
     target: target.trim(),
     relationType,
-    description: description.trim(),
+    description: cleanDescription,
     strength,
   };
 }
