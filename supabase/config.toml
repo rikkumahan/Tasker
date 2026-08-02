@@ -7,6 +7,12 @@ verify_jwt = false
 # Must stay unauthenticated so the tasker-queue-pulse cron failsafe (jobid 3) can reach it
 # without a service-role Authorization header (ISSUE-5 in TaskerAI/e2e/ISSUES.md).
 
+[functions.renew_gmail_watches]
+verify_jwt = false
+# Safe: takes zero parameters, iterates ACTIVE users server-side only. Must stay
+# unauthenticated for the same reason as background_worker — pg_cron's net.http_post
+# sends no apikey/Authorization header.
+
 
 [functions.delete-account]
 enabled = true

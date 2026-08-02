@@ -1,7 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders } from "../_shared/cors.ts";
 import { decodeBody, sleep, cleanEmailBody, isSpamOrAd, isWorthProcessing, processInBatches } from "../_shared/utils.ts";
-import { refreshGmailToken } from "../_shared/oauth.ts";
+import { refreshGmailToken, registerGmailWatch } from "../_shared/oauth.ts";
 import { GraphRAGStore, getEmbedding } from "../_shared/graph.ts";
 import { ActionContextBuilder, ActionExtractor, ActionReconciler } from "../_shared/actions.ts";
 
@@ -39,36 +39,6 @@ function asyncLog(supabaseAdmin: any, userId: string, event: string, data: any) 
   const p = supabaseAdmin.from("debug_logs").insert({ user_id: userId, event, data })
     .then(() => {}).catch((e: any) => console.error(`[ASYNC LOG] ${event} failed:`, e.message));
   fireAndForget(p);
-}
-
-async function registerGmailWatch(gmailToken: string, supabaseAdmin: any, userId: string) {
-  const projectId = Deno.env.get("GOOGLE_CLOUD_PROJECT_ID");
-  if (!projectId) {
-    asyncLog(supabaseAdmin, userId, "GMAIL_WATCH_SKIPPED", { reason: "missing_google_cloud_project_id" });
-    return;
-  }
-
-  const watchRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      labelIds: ["INBOX"],
-      topicName: `projects/${projectId}/topics/tasker-gmail-push`,
-    }),
-  });
-  const watchBody = await watchRes.text();
-
-  if (!watchRes.ok) {
-    asyncLog(supabaseAdmin, userId, "GMAIL_WATCH_FAILED", {
-      status: watchRes.status,
-      body: watchBody.substring(0, 500),
-    });
-    return;
-  }
-
-  asyncLog(supabaseAdmin, userId, "GMAIL_WATCH_REGISTERED", {
-    response: watchBody ? JSON.parse(watchBody) : null,
-  });
 }
 
 // ─────────────────────────────────────────────

@@ -57,3 +57,41 @@ export async function refreshGmailToken(userId: string, refreshToken: string, su
   await supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "GMAIL_TOKEN_REFRESHED", data: {} });
   return data.access_token;
 }
+
+// ─────────────────────────────────────────────
+// GMAIL WATCH REGISTRATION (push notification subscription)
+// Google expires this after 7 days regardless of activity — must be
+// re-registered periodically, not just once at onboarding.
+// ─────────────────────────────────────────────
+export async function registerGmailWatch(gmailToken: string, supabaseAdmin: any, userId: string) {
+  const projectId = Deno.env.get("GOOGLE_CLOUD_PROJECT_ID");
+  if (!projectId) {
+    supabaseAdmin.from("debug_logs").insert({ user_id: userId, event: "GMAIL_WATCH_SKIPPED", data: { reason: "missing_google_cloud_project_id" } }).then(() => {});
+    return;
+  }
+
+  const watchRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      labelIds: ["INBOX"],
+      topicName: `projects/${projectId}/topics/tasker-gmail-push`,
+    }),
+  });
+  const watchBody = await watchRes.text();
+
+  if (!watchRes.ok) {
+    await supabaseAdmin.from("debug_logs").insert({
+      user_id: userId,
+      event: "GMAIL_WATCH_FAILED",
+      data: { status: watchRes.status, body: watchBody.substring(0, 500) },
+    });
+    return;
+  }
+
+  await supabaseAdmin.from("debug_logs").insert({
+    user_id: userId,
+    event: "GMAIL_WATCH_REGISTERED",
+    data: { response: watchBody ? JSON.parse(watchBody) : null },
+  });
+}
