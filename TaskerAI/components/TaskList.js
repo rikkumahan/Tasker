@@ -121,7 +121,11 @@ export const FilterChips = ({ active, onSelect, counts }) => (
 );
 
 const fc = StyleSheet.create({
-  scroll:      { marginBottom: T.sp3 },
+  // flexGrow/flexShrink: 0 — without this, RN Web's ScrollView stretches to fill
+  // the leftover vertical space in the column layout (confirmed via devtools:
+  // the content container was rendering 244px tall for a ~36px row of pills),
+  // pushing the task list down and leaving dead space above and below the chips.
+  scroll:      { marginBottom: T.sp3, flexGrow: 0, flexShrink: 0 },
   content:     { flexDirection: 'row', alignItems: 'center', gap: T.sp2, paddingBottom: 2 },
   chip: {
     flexDirection: 'row',
