@@ -2,13 +2,13 @@
   <img src="docs/logo.svg" alt="TaskerAI logo" width="320" />
 </p>
 
-# Tasker: Corporate Email GraphRAG Engine
+# Tasker: A Context-Aware Email Productivity App
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Expo](https://img.shields.io/badge/Expo-~54-000020?logo=expo)](https://expo.dev)
 [![Supabase](https://img.shields.io/badge/Backend-Supabase-3ECF8E?logo=supabase)](https://supabase.com)
 
-Tasker is a production-grade backend and cross-platform (web + mobile) app built to sync unstructured corporate emails and transform them into a searchable, relational knowledge graph.
+Tasker is a production-grade backend and cross-platform (web + mobile) app built to sync unstructured emails and transform them into a searchable, relational knowledge graph.
 
 By running community detection and dual-mode GraphRAG, the system answers complex user questions about internal projects, contacts, and tasks, complete with inline citations linking back to original email threads.
 
