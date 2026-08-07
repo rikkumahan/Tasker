@@ -2,15 +2,33 @@
   <img src="docs/logo.svg" alt="TaskerAI logo" width="320" />
 </p>
 
-# Tasker: A Context-Aware Email Productivity App
+# Tasker AI
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Expo](https://img.shields.io/badge/Expo-~54-000020?logo=expo)](https://expo.dev)
 [![Supabase](https://img.shields.io/badge/Backend-Supabase-3ECF8E?logo=supabase)](https://supabase.com)
 
-Tasker is a production-grade backend and cross-platform (web + mobile) app built to sync unstructured emails and transform them into a searchable, relational knowledge graph.
+Tasker AI is a cross-platform (web + mobile), AI-powered email intelligence platform that helps users stay on top of their inbox without manually reading every conversation. It analyzes email threads, extracts tasks, deadlines, pending replies, and project information, then organizes them into a structured workspace. Rather than relying only on keyword search or simple summarization, Tasker AI understands the context shared across conversations, making it easier to track work, prioritize actions, and find relevant information when it's needed.
 
-By running community detection and dual-mode GraphRAG, the system answers complex user questions about internal projects, contacts, and tasks, complete with inline citations linking back to original email threads.
+## What Problem Does It Solve?
+
+People spend a significant amount of time searching through email threads, tracking commitments, remembering follow-ups, and connecting related conversations. Important tasks often get buried under newsletters, notifications, and long email chains.
+
+Tasker AI eliminates this friction by automatically extracting meaningful information and presenting it in a clear, prioritized workspace.
+
+## Core Features
+
+- **Action Item Extraction** — Detects tasks, deadlines, approvals, and follow-ups from emails.
+- **Context Awareness** — Understands relationships between people, projects, and conversations instead of analyzing emails in isolation.
+- **Priority Dashboard** — Organizes work into categories such as:
+  - Projects
+  - Personal Emails
+  - Action Insights
+  - Pending Requests
+  - Priority Items
+- **Semantic Search** — Find information based on meaning rather than exact keywords.
+- **Relationship Mapping** — Connects related emails across long conversations to provide complete context.
+- **AI Summaries** — Condenses lengthy email threads into concise, actionable summaries.
 
 ## Technical Architecture
 
