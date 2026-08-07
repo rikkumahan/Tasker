@@ -27,7 +27,7 @@ At a high level, Tasker separates the ingestion of real-time emails from the hea
 
 ### 3. LLM Integration Pipeline
 - **Local Models**: Supabase AI `gte-small` runs locally for embedding generation without network overhead.
-- **Remote Models**: Groq API provides high-throughput inference. We use Llama 3.1 8B for fast, cheap entity extraction, and Llama 3.3 70B for deep reasoning during the final GraphRAG synthesis.
+- **Remote Models**: Groq API provides high-throughput inference for both fast entity extraction/categorization and deeper reasoning during profile synthesis and final GraphRAG answers.
 
 ### 4. Cross-Platform Client (`TaskerAI/`)
 - Built with Expo Router + React Native (Expo ~54, React 19) — a single codebase ships to web, iOS, and Android.
@@ -42,8 +42,8 @@ When a user signs up and links their Google Workspace:
 
 1. **Authentication and Webhooks**: Google OAuth completes, and the system registers a Google Cloud Pub/Sub webhook. This watches the inbox for real-time delivery events.
 2. **Historical Queueing**: A background worker performs a historical sync, governed by a self-healing concurrency lock (Redis-style TTL in Postgres) to prevent race conditions.
-3. **Data Extraction**: Emails are batched, filtered for spam/promotions, redacted, and fed to Llama 3.1 to extract graph triplets. 
-4. **Clustering**: In the background, the edge-native Louvain algorithm builds network communities. Llama 3.3 generates a structured report summarizing the themes of each community.
+3. **Data Extraction**: Emails are batched, filtered for spam/promotions, redacted, and fed to a Groq-hosted model to extract graph triplets. 
+4. **Clustering**: In the background, the edge-native Louvain algorithm builds network communities. A Groq-hosted model generates a structured report summarizing the themes of each community.
 5. **Dashboard Exploration**: The user logs in to search their communication history, track actionable tasks, and browse sender biographies.
 
 ---
@@ -67,7 +67,7 @@ flowchart TD
     subgraph Ingestion [Email Pipeline]
         Gmail[Gmail Push/Pull]
         Redactor[PII Regex Redactor]
-        Extractor[Llama 3.1 8B Extractor]
+        Extractor[Groq LLM Extractor]
         Resolver[Vector Entity Resolver]
         
         Gmail -->|Raw threads| Redactor
@@ -81,7 +81,7 @@ flowchart TD
 
     subgraph GraphOps [Background Graph Processing]
         Louvain[TS Louvain Clustering]
-        SummaryGen[Llama 3.3 70B Mapper]
+        SummaryGen[Groq LLM Mapper]
         
         Louvain -->|Node Communities| SummaryGen
     end
@@ -90,7 +90,7 @@ flowchart TD
         Router{Scope Router}
         LocalSearch[2-Hop Subgraph Search]
         GlobalSearch[Map-Reduce Search]
-        Synthesizer[Llama 3.3 70B Synthesizer]:::core
+        Synthesizer[Groq LLM Synthesizer]:::core
         
         Router -->|Specific entities| LocalSearch
         Router -->|Broad themes| GlobalSearch
@@ -115,7 +115,7 @@ flowchart TD
 A standard RAG pipeline fails on holistic questions like "What are the main engineering bottlenecks this quarter?" because vector search only retrieves locally similar chunks. Tasker solves this using two distinct routing paths:
 
 - **Local Mode (Neighborhood Search)**: When a user asks about a specific person or project, the system queries `pgvector` for the top 5 relevant emails. It then expands the search by 2 hops in the Postgres graph to pull in connected tasks, contacts, and historical threads. This bounded subgraph is fed to the LLM to construct a precise, well-cited answer.
-- **Global Mode (Map-Reduce)**: When a user asks a broad thematic question, the system retrieves the auto-generated Community Reports. It runs parallel Map queries against Llama 3.1 to extract relevant insights from each report independently. A final Reduce step aggregates these partial answers using Llama 3.3 into a comprehensive executive summary. 
+- **Global Mode (Map-Reduce)**: When a user asks a broad thematic question, the system retrieves the auto-generated Community Reports. It runs parallel Map queries against a Groq-hosted model to extract relevant insights from each report independently. A final Reduce step aggregates these partial answers into a comprehensive executive summary. 
 
 This hybrid approach ensures high accuracy for both pinpoint queries and broad organizational analysis while keeping latency low.
 
@@ -129,6 +129,7 @@ supabase/functions/ Deno edge functions — sync pipeline, PII redaction, GraphR
 supabase/migrations/ SQL schema and RPC migrations
 execution/           Scripts and edge-function-adjacent execution layer
 directives/          SOPs the assistant/orchestration layer follows
+diagnostics/         One-off debug/eval scripts (PII redaction tuning, JWT checks)
 docs/                Deep-dive guides (design system, PII redaction engine, mobile OAuth bridge)
 archive/             Superseded docs, one-off scripts, and the deprecated Vite/React frontend — kept for history, not maintained
 ```
